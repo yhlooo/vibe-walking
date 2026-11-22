@@ -26,7 +26,7 @@ case "${arch}" in
   "x86_64")
     arch="amd64"
   ;;
-  "arm64")
+  "arm64"|"aarch64")
   ;;
   *)
     echo -e "\033[31mError: unsupported arch ${arch}\033[0m"
@@ -39,18 +39,18 @@ install_dir="${INSTALL_DIR:-${HOME}/.local/bin}"
 
 # 确定 URL
 if [[ "${version}" == "latest" ]]; then
-  url="https://github.com/yhlooo/vieb-walking/releases/latest/download/vieb-walking-${os}-${arch}.tar.gz"
+  url="https://github.com/yhlooo/vibe-walking/releases/latest/download/vibe-walking-${os}-${arch}.tar.gz"
 else
-  url="https://github.com/yhlooo/vieb-walking/releases/download/${version}/vieb-walking-${os}-${arch}.tar.gz"
+  url="https://github.com/yhlooo/vibe-walking/releases/download/${version}/vibe-walking-${os}-${arch}.tar.gz"
 fi
 
-echo -e "\033[34minstalling vieb-walking (${version}, ${os}/${arch}) to '${install_dir}/vieb-walking' ...\033[0m"
+echo -e "\033[34minstalling vibe-walking (${version}, ${os}/${arch}) to '${install_dir}/vibe-walking' ...\033[0m"
 echo -e "\033[34mdownload from ${url}\033[0m"
 
 # 下载、解压
 mkdir -p "${install_dir}"
-curl -fsSL "${url}" | tar -C "${install_dir}" -xzv vieb-walking
-chmod +x "${install_dir}/vieb-walking"
+curl -fsSL "${url}" | tar -C "${install_dir}" -xzv vibe-walking
+chmod +x "${install_dir}/vibe-walking"
 
 # 检查 PATH
 if [[ ":${PATH}:" != *":${install_dir}:"* ]]; then

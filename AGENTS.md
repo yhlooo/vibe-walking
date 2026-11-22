@@ -4,6 +4,19 @@
 
 TODO: ...
 
+## 构建前端静态资源
+
+前端项目以仓库根目录为根，需要 Node.js 22.12 或更高版本。从仓库根目录运行以下命令。
+
+```sh
+npm ci
+npm run build
+```
+
+`npm ci` 根据 `package-lock.json` 安装依赖。`npm run build` 先做 TypeScript 类型检查，再由 Vite 将 `index.html` 和打包后的资源输出到 `internal/web/dist/`。依赖已安装且锁文件未变更时，重新构建只需运行 `npm run build`。
+
+`internal/web/dist/` 由 Git 忽略。Go 编译时通过 `go:embed` 将该目录嵌入二进制。首次检出后，应先构建前端再运行 `go build`、`go run` 或 `go test ./...`。修改前端后，重新构建前端和 Go 程序即可更新嵌入的资源。
+
 ## 开发文档
 
 开发过程中的调查、设计方案、参考的外部资料必须落地文档。它们用于帮助你和其它刚接触该项目的开发者快速了解这个项目。

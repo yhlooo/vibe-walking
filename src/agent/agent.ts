@@ -1,0 +1,131 @@
+import { compileActions } from '../game/actions.ts';
+import { isRecord } from '../level/definition.ts';
+import { adapters } from './protocols.ts';
+import type { ToolCall, ToolResult } from './protocols.ts';
+import { protocols } from './settings.ts';
+import type { ModelSettings } from './settings.ts';
+import type { Outcome, StepInput } from '../game/world.ts';
+
+export const defaultPrompt = '你操控画面中有两只眼睛的浅色方块。玩家通过对话给你指引。目标是踩下红色按钮。用 ReadScreen 观察完整画面，用 ExecActionSequence 执行移动、跳跃或等待。移动距离以角色边长为一格。需要行动时先看画面，行动后按需再看画面，向玩家简短说明结果。';
+
+export type ChatEvent =
+  | { kind: 'player' | 'assistant' | 'error'; text: string }
+  | { kind: 'tool'; text: string; detail?: string; image?: string };
+
+type GameTools = {
+  readScreen: () => string;
+  execute: (steps: StepInput[]) => Promise<void>;
+  whenActive: (signal: AbortSignal) => Promise<void>;
+  outcome: () => Outcome;
+};
+
+export class Agent {
+  private readonly model: ModelSettings;
+  private readonly prompt: string;
+  private readonly tools: GameTools;
+  private readonly emit: (event: ChatEvent) => void;
+  private readonly controller = new AbortController();
+  private readonly history: Record<string, unknown>[] = [];
+  busy = false;
+
+  constructor(model: ModelSettings, prompt: string, tools: GameTools, emit: (event: ChatEvent) => void) {
+    this.model = model;
+    this.prompt = prompt;
+    this.tools = tools;
+    this.emit = emit;
+  }
+
+  dispose() {
+    this.controller.abort();
+  }
+
+  async send(text: string) {
+    const signal = this.controller.signal;
+    if (this.busy || signal.aborted) return;
+    this.busy = true;
+    const protocol = this.model.api;
+    const adapter = adapters[protocol];
+    this.history.push({ role: 'user', content: text });
+    this.emit({ kind: 'player', text });
+
+    try {
+      for (let request = 0; request < 8; request++) {
+        await this.tools.whenActive(signal);
+        signal.throwIfAborted();
+        const toolsEnabled = request < 7;
+        const body = adapter.request(this.model.model, this.prompt, this.history, toolsEnabled);
+        const result = await fetch(protocols[protocol].path, {
+          method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body), signal: AbortSignal.any([signal, AbortSignal.timeout(65000)]),
+        });
+        if (!result.ok) throw new Error(await proxyError(result));
+        const payload: unknown = await result.json();
+        await this.tools.whenActive(signal);
+        signal.throwIfAborted();
+        const reply = adapter.read(payload);
+        if (!reply.call) {
+          this.history.push(...reply.history);
+          if (reply.text) this.emit({ kind: 'assistant', text: reply.text });
+          return;
+        }
+        if (!toolsEnabled) throw new Error('模型在回合结束时仍请求执行工具');
+        if (reply.text) this.emit({ kind: 'assistant', text: reply.text });
+        const toolResult = await this.runTool(reply.call, signal);
+        signal.throwIfAborted();
+        this.history.push(...reply.history, ...adapter.result(reply.call, toolResult));
+      }
+    } catch (error) {
+      if (signal.aborted) return;
+      await this.tools.whenActive(signal).catch(() => undefined);
+      if (!signal.aborted) this.emit({ kind: 'error', text: message(error) });
+    } finally {
+      this.busy = false;
+    }
+  }
+
+  private async runTool(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {
+    try {
+      const args: unknown = call.serialized ? JSON.parse(typeof call.args === 'string' ? call.args : '') : call.args;
+      if (call.name === 'ReadScreen') {
+        if (!isRecord(args) || Object.keys(args).length) throw new Error('ReadScreen 只接受空对象');
+        const image = this.tools.readScreen();
+        this.emit({ kind: 'tool', text: '读取画面', detail: 'ReadScreen', image });
+        return { text: 'Ok', image };
+      }
+      if (call.name === 'ExecActionSequence') {
+        if (this.tools.outcome() !== 'active') throw new Error('关卡已结束');
+        const steps = compileActions(args);
+        this.emit({ kind: 'tool', text: '执行动作', detail: JSON.stringify(args, null, 2) });
+        await this.tools.execute(steps);
+        signal.throwIfAborted();
+        return { text: 'Ok' };
+      }
+      throw new Error('工具不存在');
+    } catch (error) {
+      signal.throwIfAborted();
+      const text = error instanceof SyntaxError ? '工具参数必须是有效的 JSON' : message(error);
+      this.emit({ kind: 'tool', text: '工具执行失败', detail: `${call.name} · ${text}` });
+      return { text: `Error: ${text}`, error: true };
+    }
+  }
+}
+
+function message(error: unknown): string {
+  if (error instanceof DOMException && error.name === 'TimeoutError') return '模型请求超时';
+  if (error instanceof TypeError) return '无法连接本地模型代理';
+  return error instanceof Error ? error.message : '模型请求失败';
+}
+
+async function proxyError(response: Response): Promise<string> {
+  const value: unknown = await response.json().catch(() => undefined);
+  const code = isRecord(value) && isRecord(value.error) ? value.error.code : undefined;
+  if (code === 'model_not_configured') return '请先配置模型连接';
+  if (code === 'proxy_not_enabled') return '模型协议已切换，请重新打开模型连接';
+  if (response.status === 401 || response.status === 403) return '模型鉴权失败，请检查 API Key 和访问权限';
+  if (response.status === 404) return '模型接口或模型 ID 不存在';
+  if (response.status === 429) return '模型接口已限流或额度不足';
+  if (response.status === 502) return '无法连接上游模型接口';
+  if (response.status === 504) return '上游模型请求超时';
+  if (response.status === 400 || response.status === 422) return '上游未接受模型请求，请确认模型支持截图和工具调用';
+  return `模型请求失败（HTTP ${response.status}）`;
+}

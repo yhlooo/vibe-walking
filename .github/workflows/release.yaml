@@ -20,7 +20,18 @@ jobs:
       - name: "Setup Go"
         uses: "actions/setup-go@v5"
         with:
-          go-version: "1.26.0"
+          go-version-file: go.mod
+      - name: "Setup Node"
+        uses: "actions/setup-node@v4"
+        with:
+          node-version: "22"
+          cache: npm
+      - name: "Build and test"
+        run: |
+          npm ci
+          npm run build
+          npm test
+          go test ./...
       - name: "Docker setup"
         run: |
           echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${{github.actor}} --password-stdin

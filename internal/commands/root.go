@@ -3,6 +3,11 @@ package commands
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"time"
 
 	"github.com/bombsimon/logrusr/v4"
 	"github.com/go-logr/logr"
@@ -10,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 
+	"github.com/yhlooo/vibe-walking/internal/server"
 	"github.com/yhlooo/vibe-walking/internal/version"
 )
 
@@ -54,15 +60,19 @@ func GlobalOptionsFromContext(ctx context.Context) GlobalOptions {
 
 // NewOptions 创建默认 Options
 func NewOptions() Options {
-	return Options{}
+	return Options{Listen: "127.0.0.1:2333", OpenBrowser: true}
 }
 
 // Options 运行选项
 type Options struct {
+	Listen      string
+	OpenBrowser bool
 }
 
 // AddPFlags 将选项绑定到命令行参数
-func (o *Options) AddPFlags(_ *pflag.FlagSet) {
+func (o *Options) AddPFlags(fs *pflag.FlagSet) {
+	fs.StringVarP(&o.Listen, "listen", "l", o.Listen, "HTTP listen address")
+	fs.BoolVar(&o.OpenBrowser, "open-browser", o.OpenBrowser, "Open the game in a browser after startup")
 }
 
 // NewCommand 创建根命令
@@ -76,6 +86,7 @@ func NewCommand(name string) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		Version:       version.Version,
+		Args:          cobra.NoArgs,
 
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
@@ -104,8 +115,21 @@ func NewCommand(name string) *cobra.Command {
 		},
 
 		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Println("Hello World!")
-			return nil
+			home, err := os.UserHomeDir()
+			if err != nil {
+				return fmt.Errorf("find settings directory: %w", err)
+			}
+			ctx := cmd.Context()
+			return server.Serve(ctx, opts.Listen, filepath.Join(home, ".vibewalking", "settings.json"), func(address string) {
+				fmt.Fprintln(cmd.OutOrStdout(), address)
+				if opts.OpenBrowser {
+					go func() {
+						if err := openBrowser(ctx, address); err != nil && ctx.Err() == nil {
+							logr.FromContextOrDiscard(ctx).Error(err, "open the browser manually", "url", address)
+						}
+					}()
+				}
+			})
 		},
 
 		PersistentPostRunE: func(cmd *cobra.Command, args []string) error {
@@ -121,4 +145,17 @@ func NewCommand(name string) *cobra.Command {
 	)
 
 	return cmd
+}
+
+func openBrowser(ctx context.Context, address string) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.CommandContext(ctx, "open", address).Run()
+	case "linux":
+		return exec.CommandContext(ctx, "xdg-open", address).Run()
+	default:
+		return fmt.Errorf("automatic browser opening is unavailable on %s", runtime.GOOS)
+	}
 }

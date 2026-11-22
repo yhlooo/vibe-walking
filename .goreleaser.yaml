@@ -4,9 +4,9 @@
 version: 2
 
 builds:
-  - id: vieb-walking-bin
-    binary: vieb-walking
-    main: "./cmd/vieb-walking"
+  - id: vibe-walking-bin
+    binary: vibe-walking
+    main: "./cmd/vibe-walking"
     env:
       - "CGO_ENABLED=0"
     goos:
@@ -20,25 +20,25 @@ builds:
       - "-w"
 
 archives:
-  - format: "tar.gz"
+  - formats: ["tar.gz"]
     name_template: "{{ .Binary }}-{{ .Os }}-{{ .Arch }}"
 
 checksum:
   name_template: "checksums.txt"
 
 dockers_v2:
-  - id: vieb-walking-image
+  - id: vibe-walking-image
     dockerfile: goreleaser.dockerfile
     ids:
-      - vieb-walking-bin
+      - vibe-walking-bin
     images:
-      - "ghcr.io/yhlooo/vieb-walking"
+      - "ghcr.io/yhlooo/vibe-walking"
     tags:
       - "v{{ .Version }}"
       - "latest"
     annotations:
       "org.opencontainers.image.title": "{{ .ProjectName }}"
-      "org.opencontainers.image.source": "https://github.com/yhlooo/vieb-walking.git"
+      "org.opencontainers.image.source": "https://github.com/yhlooo/vibe-walking.git"
       "org.opencontainers.image.revision": "{{ .FullCommit }}"
       "org.opencontainers.image.version": "{{ .Version }}"
       "org.opencontainers.image.created": "{{ .Date }}"
