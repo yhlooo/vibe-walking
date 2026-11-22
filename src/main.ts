@@ -4,7 +4,7 @@ import type { Conversation } from './agent/agent.ts';
 import { mountEditor } from './editor/editor.ts';
 import { playableError } from './level/definition.ts';
 import type { LevelDefinition } from './level/definition.ts';
-import { createLevel, migrateDraft, migrateProgress, readCatalog, readProgress, updateLevel, updateProgress } from './storage/game.ts';
+import { createLevel, migrateDraft, migrateProgress, readCatalog, readProgress, updateLevel, updateLevelOrder, updateProgress } from './storage/game.ts';
 import type { LevelEntry, Progress } from './storage/game.ts';
 import { element } from './ui/elements.ts';
 import { renderHome, renderLevels } from './ui/front.ts';
@@ -109,6 +109,7 @@ let library: LevelEntry[] = [];
 let warnings: string[] = [];
 let progress: Progress = { levels: {} };
 const editorWrites = new Map<string, Promise<void>>();
+let orderWrite: Promise<void> | undefined;
 let latestSave = 0;
 let username = '';
 let usernameSetupRoute = '';
@@ -153,7 +154,8 @@ async function renderRoute() {
   const id = route === '#/play' ? builtIns[0]?.id : route.split('/')[2];
   const leavingEditor = mountedRoute.startsWith('#/create/') && route !== '#/settings';
   while (true) {
-    const pending = [editorWrites.get(id), leavingEditor ? editorWrites.get(mountedRoute.split('/')[2]) : undefined];
+    const pending = [editorWrites.get(id), leavingEditor ? editorWrites.get(mountedRoute.split('/')[2]) : undefined,
+      custom || route === '#/create' ? orderWrite : undefined];
     if (!pending.some(Boolean)) break;
     await Promise.allSettled(pending);
     if (request !== routeRequest || route !== (location.hash || '#/')) return;
@@ -228,7 +230,7 @@ async function renderRoute() {
           const created = await createLevel();
           library.push(created);
           if ((location.hash || '#/') === route) location.hash = `#/create/${created.id}`;
-        });
+        }, saveLevelOrder);
     } else {
       renderHome(workspace, builtIns, progress);
     }
@@ -237,6 +239,21 @@ async function renderRoute() {
   if (isPlay && activeRun) {
     if (modelKnown) maybeOpenModelSetup();
     else void loadSettings(false);
+  }
+}
+
+async function saveLevelOrder(ids: string[]) {
+  const pending = updateLevelOrder(ids).then((saved) => {
+    const positions = new Map(saved.map((id, index) => [id, index]));
+    // Stable sort keeps the built-in campaign order.
+    const position = ({ id, kind }: LevelEntry) => kind === 'builtin' ? -1 : positions.get(id) ?? saved.length;
+    library.sort((a, b) => position(a) - position(b));
+  });
+  orderWrite = pending;
+  try {
+    await pending;
+  } finally {
+    if (orderWrite === pending) orderWrite = undefined;
   }
 }
 

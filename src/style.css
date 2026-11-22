@@ -290,6 +290,11 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .level-card [data-level-content] { display: block; }
 .level-card [data-level-content]:focus-visible { outline-offset: -3px; }
 .level-edit { position: absolute; top: 10px; right: 10px; width: 40px; color: var(--accent); }
+.level-drag { position: absolute; top: 10px; left: 10px; width: 40px; color: var(--accent); cursor: grab; touch-action: none; }
+.level-dragging { opacity: .65; }
+.level-dragging .level-drag { cursor: grabbing; }
+.level-card.level-drop-target { outline: 2px solid var(--accent); outline-offset: 2px; }
+.level-list[aria-busy] .level-drag { cursor: wait; }
 .level-result h2 { font-size: 24px; }
 .level-result p { margin-top: 8px; }
 .level-result a { padding-inline: 14px; }

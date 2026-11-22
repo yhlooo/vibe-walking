@@ -33,8 +33,21 @@ func (s *service) handleLevels(w http.ResponseWriter, r *http.Request) {
 		}
 		entry, err := s.levels.Create(r.Context(), legacy)
 		s.writeGameData(w, http.StatusCreated, entry, err)
+	case http.MethodPut:
+		var body struct {
+			IDs []string `json:"ids"`
+		}
+		if err := decodeJSON(http.MaxBytesReader(w, r.Body, 64<<10), &body, true); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_level_order", "关卡顺序格式无效")
+			return
+		}
+		if err := s.levels.SetOrder(r.Context(), body.IDs); err != nil {
+			s.writeGameData(w, http.StatusOK, nil, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, body.IDs)
 	default:
-		allowGameMethods(w, "GET, POST")
+		allowGameMethods(w, "GET, POST, PUT")
 	}
 }
 
@@ -107,6 +120,8 @@ func (s *service) writeGameData(w http.ResponseWriter, status int, data any, err
 		writeError(w, http.StatusNotFound, "level_not_found", err.Error())
 	case errors.Is(err, levels.ErrInvalidProgress):
 		writeError(w, http.StatusBadRequest, "invalid_progress", err.Error())
+	case errors.Is(err, levels.ErrInvalidOrder):
+		writeError(w, http.StatusBadRequest, "invalid_level_order", err.Error())
 	case errors.Is(err, levels.ErrLevelChanged):
 		writeError(w, http.StatusConflict, "level_changed", err.Error())
 	default:

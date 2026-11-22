@@ -40,6 +40,10 @@ export function createLevel() {
   return request<LevelEntry>('levels', 'POST', {});
 }
 
+export function updateLevelOrder(ids: string[]) {
+  return request<string[]>('levels', 'PUT', { ids });
+}
+
 export function updateLevel(id: string, level: LevelDefinition) {
   return request<LevelEntry>(`levels/${encodeURIComponent(id)}`, 'PUT', level);
 }

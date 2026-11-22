@@ -24,8 +24,9 @@ var builtInFiles embed.FS
 const MaxDefinitionBytes = 64 << 10
 
 var (
-	ErrNotFound = errors.New("关卡不存在")
-	fileID      = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
+	ErrNotFound     = errors.New("关卡不存在")
+	ErrInvalidOrder = errors.New("关卡顺序必须包含每个当前自定义关卡 ID，且每个 ID 只能出现一次。若关卡列表已变化，请刷新页面后重试")
+	fileID          = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$`)
 )
 
 type Entry struct {
@@ -96,6 +97,10 @@ func newEntry(id, kind string, level Definition) Entry {
 func (s *Store) List() (Catalog, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.list()
+}
+
+func (s *Store) list() (Catalog, error) {
 	catalog := Catalog{Levels: append([]Entry(nil), s.builtIns...)}
 	files, err := os.ReadDir(filepath.Join(s.dir, "levels"))
 	if errors.Is(err, os.ErrNotExist) {
@@ -104,6 +109,8 @@ func (s *Store) List() (Catalog, error) {
 	if err != nil {
 		return Catalog{}, err
 	}
+	var custom []Entry
+	byID := make(map[string]Entry)
 	for _, file := range files {
 		id, ok := strings.CutSuffix(file.Name(), ".json")
 		if !ok || !fileID.MatchString(id) || !file.Type().IsRegular() {
@@ -124,9 +131,68 @@ func (s *Store) List() (Catalog, error) {
 			catalog.Warnings = append(catalog.Warnings, "无法读取 "+file.Name()+" · "+err.Error())
 			continue
 		}
-		catalog.Levels = append(catalog.Levels, entry)
+		custom = append(custom, entry)
+		byID[id] = entry
+	}
+	order, err := s.readOrder()
+	if err != nil {
+		catalog.Warnings = append(catalog.Warnings, "无法读取自定义关卡顺序 · "+err.Error())
+	}
+	for _, id := range order {
+		if entry, ok := byID[id]; ok {
+			catalog.Levels = append(catalog.Levels, entry)
+			delete(byID, id)
+		}
+	}
+	for _, entry := range custom {
+		if _, ok := byID[entry.ID]; ok {
+			catalog.Levels = append(catalog.Levels, entry)
+		}
 	}
 	return catalog, nil
+}
+
+func (s *Store) orderPath() string {
+	return filepath.Join(s.dir, "level-order.json")
+}
+
+func (s *Store) readOrder() ([]string, error) {
+	raw, err := os.ReadFile(s.orderPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	if err := json.Unmarshal(raw, &ids); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+func (s *Store) SetOrder(ctx context.Context, ids []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	catalog, err := s.list()
+	if err != nil {
+		return err
+	}
+	custom := catalog.Levels[len(s.builtIns):]
+	if ids == nil || len(ids) != len(custom) {
+		return ErrInvalidOrder
+	}
+	remaining := make(map[string]bool, len(custom))
+	for _, entry := range custom {
+		remaining[entry.ID] = true
+	}
+	for _, id := range ids {
+		if !remaining[id] {
+			return ErrInvalidOrder
+		}
+		delete(remaining, id)
+	}
+	return jsonfile.Write(ctx, s.orderPath(), ids)
 }
 
 func (s *Store) get(id string) (Entry, error) {
@@ -184,6 +250,19 @@ func (s *Store) Create(ctx context.Context, legacy *Definition) (Entry, error) {
 		if !errors.Is(err, ErrNotFound) {
 			return existing, err
 		}
+	}
+	catalog, err := s.list()
+	if err != nil {
+		return Entry{}, err
+	}
+	custom := catalog.Levels[len(s.builtIns):]
+	order := make([]string, 0, len(custom)+1)
+	for _, entry := range custom {
+		order = append(order, entry.ID)
+	}
+	// Write the order first. If the definition write fails, its missing ID is ignored.
+	if err := jsonfile.Write(ctx, s.orderPath(), append(order, id)); err != nil {
+		return Entry{}, err
 	}
 	return newEntry(id, "custom", level), jsonfile.Write(ctx, s.levelPath(id), level)
 }

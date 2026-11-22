@@ -96,7 +96,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
       draw(canvas, snapshot) {
         drawScene(canvas, {
           ...snapshot, level: draft, outcome: stroke ? 'active' : snapshot.outcome,
-        }, { hover, spawn: draft.spawn });
+        }, { edit: { hover, spawn: draft.spawn } });
       },
     },
   });

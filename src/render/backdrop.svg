@@ -13,7 +13,7 @@
   <path fill="#a698e1" opacity=".065" d="M12 0h4v9H8.48z"/>
   <path fill="url(#tiles)" d="M11 5h3v1h-3zM0 8h16v1H0z"/>
   <path fill="#72639c" d="M11 5h3v.06h-3zM0 8h16v.06H0z"/>
-  <path fill="#f8f3f1" d="M12 4h1v1h-1z"/>
+  <rect x="12" y="4" width="1" height="1" rx=".02" fill="#f8f3f1"/>
   <path fill="#27233e" d="M12.49 4.3h.085v.2h-.085zm.18 0h.085v.2h-.085z"/>
   <path fill="#f03559" d="M14.7 7.85h1V8h-1z"/>
   <path fill="#ffa3af" d="M14.78 7.85h.84v.025h-.84z"/>

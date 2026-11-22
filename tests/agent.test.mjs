@@ -6,7 +6,7 @@ import { protocols } from '../src/agent/settings.ts';
 import { World } from '../src/game/world.ts';
 import { readLevel } from '../src/level/definition.ts';
 
-const firstLevel = readLevel(JSON.parse(readFileSync(new URL('../levels/definitions/0001-walk-to-button.json', import.meta.url))));
+const flatLevel = readLevel(JSON.parse(readFileSync(new URL('./fixtures/legacy-level.json', import.meta.url))));
 const png = 'data:image/png;base64,cG5n';
 const actions = { actions: [{ key: 'moveRight', value: 21 }] };
 
@@ -117,7 +117,7 @@ function verifyImage(protocol, request, id) {
 for (const protocol of Object.keys(protocols)) {
   test(`${protocol} reads the screen, acts, and observes the completed level`, async () => {
     const originalFetch = globalThis.fetch;
-    const world = new World(firstLevel);
+    const world = new World(flatLevel);
     const events = [];
     const statesSeen = [];
     const requests = [];

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -43,9 +44,18 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 		return reply
 	}
 	catalog := gameResponse[levels.Catalog](t, request("GET", "levels", nil, 200))
-	if len(catalog.Levels) < 2 || catalog.Levels[0].Kind != "builtin" || catalog.Levels[1].ID != "0002" {
+	builtInIDs := []string{"walk-to-red-button", "midair-jump", "trust"}
+	builtInNames := []string{"01 走到红色按钮", "02 悬空起跳", "03 信任"}
+	if len(catalog.Levels) != len(builtInIDs) {
 		t.Fatalf("unexpected built-in order: %+v", catalog)
 	}
+	for index, entry := range catalog.Levels {
+		if entry.Kind != "builtin" || entry.ID != builtInIDs[index] || entry.Level.Name != builtInNames[index] {
+			t.Fatalf("unexpected built-in level at index %d: %+v", index, entry)
+		}
+	}
+	request("GET", "levels/0001", nil, 404)
+	request("GET", "levels/0002", nil, 404)
 	builtin := catalog.Levels[0]
 	request("PUT", "levels/"+builtin.ID, builtin.Level, 404)
 
@@ -73,6 +83,24 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	if again := gameResponse[levels.Entry](t, request("POST", "levels", legacyBody, 201)); again.ID != legacy.ID {
 		t.Fatalf("migration created a duplicate: %s and %s", legacy.ID, again.ID)
 	}
+	assertOrder := func(ids ...string) {
+		t.Helper()
+		catalog := gameResponse[levels.Catalog](t, request("GET", "levels", nil, 200))
+		var actual []string
+		for _, entry := range catalog.Levels {
+			actual = append(actual, entry.ID)
+		}
+		if !slices.Equal(actual, append(slices.Clone(builtInIDs), ids...)) {
+			t.Fatalf("unexpected catalog order: %v", actual)
+		}
+	}
+	assertOrder(custom.ID, legacy.ID)
+	for _, invalid := range [][]string{{legacy.ID}, {legacy.ID, legacy.ID}, {builtin.ID, custom.ID}, {"missing", custom.ID}} {
+		request("PUT", "levels", map[string][]string{"ids": invalid}, 400)
+	}
+	assertOrder(custom.ID, legacy.ID)
+	request("PUT", "levels", map[string][]string{"ids": {legacy.ID, custom.ID}}, 200)
+	assertOrder(legacy.ID, custom.ID)
 
 	var run levels.Run
 	run.World.Player.X, run.World.Player.Y, run.World.Player.Facing = 7.25, 8, 1
@@ -83,10 +111,13 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	request("PUT", "progress/"+custom.ID, levels.ProgressUpdate{Revision: saved.Revision, SavedAt: 11, Recent: true, Run: &run}, 200)
 
 	handler = start()
-	catalog = gameResponse[levels.Catalog](t, request("GET", "levels", nil, 200))
-	if len(catalog.Levels) != 4 {
-		t.Fatalf("local definitions not available after restart: %+v", catalog)
+	assertOrder(legacy.ID, custom.ID)
+	if err := os.WriteFile(filepath.Join(dir, "levels", "manual.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
+	assertOrder(legacy.ID, custom.ID, "manual")
+	additional := gameResponse[levels.Entry](t, request("POST", "levels", struct{}{}, 201))
+	assertOrder(legacy.ID, custom.ID, "manual", additional.ID)
 	savedProgress := gameResponse[levels.Progress](t, request("GET", "progress", nil, 200))
 	if entry := savedProgress.Levels[builtin.ID]; savedProgress.RecentBuiltin != builtin.ID ||
 		entry.Run == nil || entry.Run.World.Player.X != 7.25 || *entry.Run.ElapsedMS != elapsed {
