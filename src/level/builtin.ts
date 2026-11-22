@@ -1,11 +1,5 @@
 import catalog from '../../levels/meta.json';
-import { gridSize, playableError, readLevel, resizeLevel } from './definition.ts';
-import type { LevelDefinition } from './definition.ts';
-
-export function builtInBoard(level: LevelDefinition, rows: number, columns: number) {
-  const current = gridSize(level.tiles);
-  return current.rows === rows && current.columns === columns ? level : resizeLevel(level, rows, columns);
-}
+import { playableError, readLevel } from './definition.ts';
 
 const definitions = import.meta.glob('../../levels/definitions/*.json', { eager: true, import: 'default' });
 export const builtInLevels = catalog.map((entry) => {

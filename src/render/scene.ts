@@ -4,12 +4,22 @@ import type { Snapshot } from '../game/world.ts';
 
 type EditOverlay = { hover?: Point; spawn?: Point };
 
-export function drawScene(canvas: HTMLCanvasElement, { level, player, outcome }: Snapshot, edit?: EditOverlay) {
+export function drawScene(canvas: HTMLCanvasElement, { level, player, outcome }: Snapshot, edit?: EditOverlay, pixelHeight?: number) {
   const { rows, columns } = gridSize(level.tiles);
-  const targetWidth = Math.round(canvas.height * columns / rows);
-  if (canvas.width !== targetWidth) canvas.width = targetWidth;
   const ratio = String(columns / rows);
   if (canvas.style.getPropertyValue('--scene-ratio') !== ratio) canvas.style.setProperty('--scene-ratio', ratio);
+  if (pixelHeight === undefined) {
+    const size = canvas.getBoundingClientRect();
+    if (size.width === 0 || size.height === 0) return;
+    const scale = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(size.width * scale));
+    const height = Math.max(1, Math.round(size.height * scale));
+    if (canvas.width !== width) canvas.width = width;
+    if (canvas.height !== height) canvas.height = height;
+  } else {
+    canvas.width = Math.round(pixelHeight * columns / rows);
+    canvas.height = pixelHeight;
+  }
   const context = canvas.getContext('2d');
   if (!context) throw new Error('当前浏览器无法创建游戏画面');
   const { width, height } = canvas;
@@ -81,8 +91,6 @@ export function drawScene(canvas: HTMLCanvasElement, { level, player, outcome }:
 function drawCharacter(context: CanvasRenderingContext2D, { x, y }: Point, facing: -1 | 1) {
   context.fillStyle = '#f8f3f1';
   context.fillRect(x, y, 1, 1);
-  context.fillStyle = '#d9cde2';
-  context.fillRect(x, y + 0.91, 1, 0.09);
   const eye = x + (facing > 0 ? 0.49 : 0.29);
   context.fillStyle = '#27233e';
   context.fillRect(eye, y + 0.30, 0.085, 0.20);
@@ -113,7 +121,6 @@ function drawGrid(context: CanvasRenderingContext2D, columns: number, rows: numb
 
 export function captureScene(snapshot: Snapshot): string {
   const canvas = document.createElement('canvas');
-  canvas.height = 512;
-  drawScene(canvas, snapshot);
+  drawScene(canvas, snapshot, undefined, 512);
   return canvas.toDataURL('image/png');
 }

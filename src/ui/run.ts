@@ -12,7 +12,7 @@ type RunOptions = {
   model: ModelSettings | null;
   conversation: Conversation;
   completedAt?: string;
-  onComplete?: () => void;
+  onComplete?: (durationMS?: number) => void;
   openSettings: () => void;
   editor?: {
     draw: (canvas: HTMLCanvasElement, snapshot: Snapshot) => void;
@@ -75,6 +75,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   let manual = false;
   let agent: Agent | undefined;
   let lastRecord = 0;
+  let firstPromptAt: number | undefined;
   title.textContent = level.name;
   doneBadge.hidden = !options.completedAt;
   if (options.completedAt) doneBadge.title = new Date(options.completedAt).toLocaleString();
@@ -123,7 +124,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     if (outcome === 'won' && options.onComplete) {
       doneBadge.hidden = false;
       try {
-        options.onComplete();
+        options.onComplete(firstPromptAt === undefined ? undefined : Math.round(performance.now() - firstPromptAt));
       } catch {
         stageStatus.textContent += ' · 浏览器无法保存进度';
       }
@@ -156,6 +157,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   }
 
   function reset() {
+    firstPromptAt = undefined;
     replaceAgent();
     runtime.reset(level, manual);
     draw(runtime.world.snapshot());
@@ -218,6 +220,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     if (send.disabled || !agent || !text) return;
     const current = agent;
     input.value = '';
+    firstPromptAt ??= performance.now();
     await current.send(text, level.systemPrompt ?? defaultPrompt);
     if (!signal.aborted && current === agent) refreshStatus();
   }, { signal });

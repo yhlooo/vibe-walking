@@ -103,7 +103,7 @@ h2 { font-size: 15px; font-weight: 730; }
 .manual-control input, .settings-form .checkbox input { accent-color: var(--accent); }
 .stage-panel { align-self: start; }
 .stage { background: #201c31; }
-.stage canvas { width: min(100%, calc(65svh * var(--scene-ratio, 1.5))); height: auto; margin-inline: auto; display: block; }
+.stage canvas { width: min(100%, calc(65svh * var(--scene-ratio, 1.5))); height: auto; aspect-ratio: var(--scene-ratio, 1.5); margin-inline: auto; display: block; }
 .stage canvas:focus-visible { outline-offset: -3px; }
 .stage-footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 48px; padding: 11px 14px; font-size: 13px; border-top: 1px solid var(--border); color: #d9cfe6; }
 .stage-footer > span:empty { display: none; }
@@ -161,7 +161,7 @@ input::placeholder, textarea::placeholder { color: #9d90ad; }
 .swatch.solid { background: #393251; border-top: 2px solid #9484bd; }
 .swatch.target { height: 8px; background: #ef4764; border-top: 2px solid #ff8ca0; }
 .swatch.eraser { border: 1px dashed #bbabcb; }
-.swatch.spawn { background: #f5edf3; border-bottom: 2px solid #cbb7d5; }
+.swatch.spawn { background: #f5edf3; }
 .swatch.spawn::after { content: ""; position: absolute; top: 4px; left: 7px; width: 1.5px; height: 4px; background: #281e32; box-shadow: 3px 0 #281e32; }
 .physics-fields { display: grid; gap: 10px; border-top: 1px solid var(--border); padding-top: 13px; }
 .physics-fields input { width: 100%; }
@@ -183,15 +183,20 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
   align-items: center;
   padding-inline: clamp(0px, 4vw, 66px);
 }
-.home-content { width: min(100%, 510px); }
+.home-content { width: min(100%, 720px); }
 .home-content h1 {
   color: #f5ecff;
-  font-size: clamp(54px, 9.2vw, 136px);
+  font-size: clamp(44px, 12vw, 136px);
+  overflow-wrap: normal;
+  white-space: nowrap;
   font-weight: 900;
   line-height: .83;
   letter-spacing: -.085em;
   text-shadow: 0 .055em #7763a3, 0 .12em 1em #161026ba;
 }
+.home-content h1 > span { display: block; }
+.home-content .home-title-line { display: flex; align-items: center; gap: .18em; }
+.home-character { width: .60em; height: .60em; flex: none; }
 .home-content p { margin-top: clamp(18px, 4vw, 38px); color: #d5c8e6; line-height: 1.6; }
 .home-actions { display: grid; gap: 8px; width: min(100%, 272px); margin-top: 24px; }
 .scene-action {
@@ -221,6 +226,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .level-caption-title span, .level-caption time { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .level-caption-title .success { color: var(--success); }
 .level-caption p { margin-top: 6px; font-size: 13px; color: #d5c7e2; }
+.level-caption .level-best { margin-top: 10px; font-weight: 650; }
 .level-caption time { display: block; margin-top: 8px; }
 
 .settings-scene { width: min(100%, 540px); }
@@ -242,7 +248,6 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
   .editor-tools { grid-area: 2 / 1; }
   .run-sidebar { height: min(67svh, 520px); min-height: 340px; }
   .stage-footer { flex-wrap: wrap; }
-  .home-content h1 { font-size: clamp(51px, 14vw, 86px); }
   .scene-backdrop { object-position: 65% bottom; }
   .scene-backdrop:not([hidden]) + .workspace::before { background: linear-gradient(90deg, #13121bf0, #1714248c 90%); }
 }

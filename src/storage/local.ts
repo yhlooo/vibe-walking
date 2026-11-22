@@ -1,23 +1,10 @@
-import { gridSizes, isRecord, readLevel } from '../level/definition.ts';
+import { isRecord, readLevel } from '../level/definition.ts';
 import type { LevelDefinition } from '../level/definition.ts';
 
 const draftKey = 'vibe-walking:v1:draft';
 const progressKey = 'vibe-walking:v1:progress';
 const recentLevelKey = 'vibe-walking:v1:recent-level';
-const playSizeKey = 'vibe-walking:v1:play-size';
-
-export function playGridSize(): (typeof gridSizes)[number] {
-  try {
-    const rows = Number(localStorage.getItem(playSizeKey));
-    return gridSizes.find((size) => size.rows === rows) ?? gridSizes[1];
-  } catch {
-    return gridSizes[1];
-  }
-}
-
-export function savePlayGridSize(rows: number) {
-  localStorage.setItem(playSizeKey, String(rows));
-}
+type Completion = { completedAt: string; bestDurationMS?: number };
 
 export function recentLevel(): string | null {
   try {
@@ -49,13 +36,21 @@ export function saveDraft(draft: LevelDefinition) {
   localStorage.setItem(draftKey, JSON.stringify(draft));
 }
 
-function readProgress(): Record<string, { completedAt: string }> {
+function readProgress(): Record<string, Completion> {
   try {
     const saved: unknown = JSON.parse(localStorage.getItem(progressKey) ?? '{}');
     if (isRecord(saved)) {
-      return Object.fromEntries(Object.entries(saved).flatMap(([id, item]) =>
-        isRecord(item) && typeof item.completedAt === 'string' && Number.isFinite(Date.parse(item.completedAt))
-          ? [[id, { completedAt: item.completedAt }]] : []));
+      const entries: [string, Completion][] = [];
+      for (const [id, item] of Object.entries(saved)) {
+        if (!isRecord(item) || typeof item.completedAt !== 'string' || !Number.isFinite(Date.parse(item.completedAt))) continue;
+        const { completedAt, bestDurationMS } = item;
+        const record: Completion = { completedAt };
+        if (typeof bestDurationMS === 'number' && Number.isFinite(bestDurationMS) && bestDurationMS >= 0) {
+          record.bestDurationMS = bestDurationMS;
+        }
+        entries.push([id, record]);
+      }
+      return Object.fromEntries(entries);
     }
   } catch {
     // Missing or invalid progress is equivalent to a fresh game.
@@ -63,13 +58,17 @@ function readProgress(): Record<string, { completedAt: string }> {
   return {};
 }
 
-export function completion(id: string): string | undefined {
-  return readProgress()[id]?.completedAt;
+export function completion(id: string): Completion | undefined {
+  return readProgress()[id];
 }
 
-export function markCompleted(id: string) {
+export function markCompleted(id: string, durationMS?: number) {
   const progress = readProgress();
-  if (progress[id]) return;
-  progress[id] = { completedAt: new Date().toISOString() };
+  const previous = progress[id];
+  if (previous && (durationMS === undefined || durationMS >= (previous.bestDurationMS ?? Infinity))) return;
+  progress[id] = {
+    completedAt: previous?.completedAt ?? new Date().toISOString(),
+    bestDurationMS: durationMS,
+  };
   localStorage.setItem(progressKey, JSON.stringify(progress));
 }
