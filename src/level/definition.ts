@@ -74,7 +74,7 @@ export function readLevel(value: unknown): LevelDefinition {
   }
   return {
     schemaVersion: 1, name, tiles, spawn: { x, y }, gravity, inertia,
-    ...(typeof systemPrompt === 'string' && systemPrompt.trim() ? { systemPrompt } : {}),
+    ...(typeof systemPrompt === 'string' ? { systemPrompt } : {}),
   };
 }
 

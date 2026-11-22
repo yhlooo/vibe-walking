@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-logr/logr"
 
+	"github.com/yhlooo/vibe-walking/levels"
 	"github.com/yhlooo/vibe-walking/pkg/config"
 )
 
@@ -17,6 +18,7 @@ type service struct {
 	path   string
 	logger logr.Logger
 	client *http.Client
+	levels *levels.Store
 
 	mu    sync.RWMutex
 	model config.ModelConfig

@@ -7,12 +7,14 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 
 	"github.com/yhlooo/vibe-walking/internal/web"
+	"github.com/yhlooo/vibe-walking/levels"
 	"github.com/yhlooo/vibe-walking/pkg/config"
 )
 
@@ -85,8 +87,13 @@ func newHandler(settingsPath string, localOnly bool, logger logr.Logger) (http.H
 	if err != nil {
 		return nil, err
 	}
+	library, err := levels.NewStore(filepath.Dir(settingsPath))
+	if err != nil {
+		return nil, err
+	}
 	s := &service{
-		path: settingsPath, model: cfg.Model, logger: logger,
+		levels: library,
+		path:   settingsPath, model: cfg.Model, logger: logger,
 		client: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}},
@@ -97,6 +104,10 @@ func newHandler(settingsPath string, localOnly bool, logger logr.Logger) (http.H
 	}))
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/settings", guard.Handler(http.HandlerFunc(s.handleSettings)))
+	mux.Handle("/api/v1/levels", guard.Handler(http.HandlerFunc(s.handleLevels)))
+	mux.Handle("/api/v1/levels/{id}", guard.Handler(http.HandlerFunc(s.handleLevel)))
+	mux.Handle("/api/v1/progress", guard.Handler(http.HandlerFunc(s.handleProgress)))
+	mux.Handle("/api/v1/progress/{id}", guard.Handler(http.HandlerFunc(s.handleLevelProgress)))
 	for _, proxy := range modelProxies {
 		mux.Handle("/llmproxies"+proxy.suffix, guard.Handler(http.HandlerFunc(s.proxy(proxy))))
 	}

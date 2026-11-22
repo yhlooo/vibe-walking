@@ -145,13 +145,9 @@ kbd { display: inline-block; min-width: 18px; text-align: center; border: 1px so
 .editor-tools label, .settings-form label { display: grid; gap: 7px; font-size: 13px; color: #ddd3e9; }
 input, textarea, select { border: 1px solid #433a53; background: var(--inset); border-radius: 7px; padding: 9px 10px; min-width: 0; font-size: 13px; }
 input::placeholder, textarea::placeholder { color: #9d90ad; }
-.prompt-field { font-size: 13px; }
-.prompt-field summary { cursor: pointer; }
-.prompt-field textarea { margin-top: 8px; }
 .editor-tool-title { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .editor-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .editor-actions button { flex: 1; padding-inline: 7px; }
-.prompt-field textarea { width: 100%; min-height: 110px; resize: vertical; }
 .editor-layout canvas { cursor: crosshair; touch-action: none; }
 .editor-status { font-size: 12px; line-height: 1.5; }
 .brushes { display: flex; flex-direction: column; gap: 6px; }
@@ -251,3 +247,33 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
   .scene-backdrop { object-position: 65% bottom; }
   .scene-backdrop:not([hidden]) + .workspace::before { background: linear-gradient(90deg, #13121bf0, #1714248c 90%); }
 }
+
+.levels-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
+.level-tabs { display: flex; gap: 8px; }
+.level-tabs .scene-action { padding-inline: 14px; }
+.level-tabs [aria-current] { background: #392d4c; border-color: #a68dc7; }
+.levels-notice { margin-block: 12px; }
+.level-card { position: relative; }
+.level-card [data-level-content] { display: block; }
+.level-card [data-level-content]:focus-visible { outline-offset: -3px; }
+.level-edit { position: absolute; top: 10px; right: 10px; min-height: 34px; padding-inline: 12px; }
+.level-result h2 { font-size: 24px; }
+.level-result p { margin-top: 8px; }
+.level-result a { padding-inline: 14px; }
+.settings-dialog .settings-form { padding: 0; margin: 0; border: 0; background: transparent; }
+.stage { position: relative; }
+.game-over {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 14px;
+  background: #13101de0;
+}
+.game-over h2 { font-size: clamp(26px, 5vw, 54px); }
+
+.prompt-button { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.prompt-dialog { width: min(760px, calc(100vw - 30px)); }
+.prompt-dialog textarea { display: block; width: 100%; min-height: min(300px, 50dvh); max-height: 65dvh; resize: vertical; line-height: 1.65; }
+.settings-dialog .settings-form > h2 { display: none; }

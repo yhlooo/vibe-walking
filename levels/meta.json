@@ -4,5 +4,11 @@
     "name": "走到红色按钮",
     "definition": "0001-walk-to-button.json",
     "description": "引导角色向右走到红色按钮。"
+  },
+  {
+    "id": "0002",
+    "name": "跳过障碍",
+    "definition": "0002-jump-over-block.json",
+    "description": "引导角色跳过方块，再走到红色按钮。"
   }
 ]

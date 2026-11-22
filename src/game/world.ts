@@ -5,6 +5,14 @@ export type Direction = -1 | 0 | 1;
 export type StepInput = { direction: Direction; jump: boolean; distance: number };
 export type Outcome = 'active' | 'won' | 'lost';
 export type Player = Point & { facing: -1 | 1 };
+export type WorldState = {
+  player: Player;
+  velocityY: number;
+  canJump: boolean;
+  previousDirection: Direction;
+  slideDirection: Direction;
+  slideRemaining: number;
+};
 export type Snapshot = { level: LevelDefinition; player: Player; outcome: Outcome };
 
 export const stepMS = 10;
@@ -32,12 +40,26 @@ export class World {
   private slideRemaining = 0;
   outcome: Outcome = 'active';
 
-  constructor(level: LevelDefinition) {
+  constructor(level: LevelDefinition, saved?: WorldState) {
     this.level = level;
     this.button = findButton(level);
     this.size = gridSize(level.tiles);
-    this.player = { ...level.spawn, facing: 1 };
+    this.player = saved ? { ...saved.player } : { ...level.spawn, facing: 1 };
+    if (saved) {
+      this.velocityY = saved.velocityY;
+      this.canJump = saved.canJump;
+      this.previousDirection = saved.previousDirection;
+      this.slideDirection = saved.slideDirection;
+      this.slideRemaining = saved.slideRemaining;
+    }
     this.solids = level.tiles.flatMap((row, y) => Array.from(row).flatMap((tile, x) => tile === '#' ? [{ x, y }] : []));
+  }
+
+  save(): WorldState {
+    return {
+      player: { ...this.player }, velocityY: this.velocityY, canJump: this.canJump,
+      previousDirection: this.previousDirection, slideDirection: this.slideDirection, slideRemaining: this.slideRemaining,
+    };
   }
 
   snapshot(): Snapshot {

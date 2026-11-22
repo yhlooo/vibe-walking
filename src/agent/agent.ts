@@ -6,16 +6,28 @@ import { protocols } from './settings.ts';
 import type { ModelSettings, Protocol } from './settings.ts';
 import type { Outcome, StepInput } from '../game/world.ts';
 
-export const defaultPrompt = '你操控画面中有两只眼睛的浅色方块。玩家通过对话给你指引。目标是踩下红色按钮。用 ReadScreen 观察完整画面，用 ExecActionSequence 执行移动、跳跃或等待。移动距离以角色边长为一格。需要行动时先看画面，行动后按需再看画面，向玩家简短说明结果。';
+export const defaultPrompt = `你操控画面中有两只眼睛的浅色方块，角色边长为一格。
+
+- 使用 ReadScreen 查看完整画面。使用 ExecActionSequence 按顺序执行动作。
+- moveLeft 和 moveRight 的 value 是移动距离，单位为格。sleep 的 value 是等待时间，单位为秒。jump 无需 value，可和紧随其后的移动同时开始。
+- 重力持续生效，角色落回支撑面后恢复起跳机会；走出边缘时，若尚未起跳，仍可跳一次。实心方块和地图顶边阻挡移动，地图两侧限制水平移动。停止水平输入后，角色可能因惯性继续滑动。角色完全跌出地图底边即死亡。`;
+
+export const respawnInfo = '<system-info>你刚刚跌落悬崖，现在游戏重新开始了</system-info>';
+
+function userContent(text: string, systemInfo?: string) {
+  return systemInfo ? `${systemInfo}\n${text}` : text;
+}
 
 export type ChatEvent =
-  | { kind: 'player' | 'assistant' | 'error'; text: string }
+  | { kind: 'player'; text: string; systemInfo?: string }
+  | { kind: 'assistant' | 'error'; text: string }
   | { kind: 'tool'; text: string; detail?: string; image?: string };
 
 export type Conversation = {
   events: ChatEvent[];
   history: Record<string, unknown>[];
   protocol?: Protocol;
+  pendingSystemInfo?: string;
 };
 
 type GameTools = {
@@ -56,16 +68,20 @@ export class Agent {
     const conversation = this.conversation;
     if (conversation.protocol && conversation.protocol !== protocol) {
       conversation.history = conversation.events.flatMap((event) => {
-        if (event.kind === 'player') return [{ role: 'user', content: event.text }];
+        if (event.kind === 'player') return [{ role: 'user', content: userContent(event.text, event.systemInfo) }];
         if (event.kind === 'assistant') return [{ role: 'assistant', content: event.text }];
         return [];
       });
     }
     conversation.protocol = protocol;
     const { history } = conversation;
-    history.push({ role: 'user', content: text });
-    this.emit({ kind: 'player', text });
+    const systemInfo = conversation.pendingSystemInfo;
+    delete conversation.pendingSystemInfo;
+    const userMessage = { role: 'user', content: userContent(text, systemInfo) };
+    history.push(userMessage);
+    this.emit({ kind: 'player', text, ...(systemInfo ? { systemInfo } : {}) });
 
+    let uncommittedText: string | undefined;
     try {
       for (let request = 0; request < 8; request++) {
         await this.tools.whenActive(signal);
@@ -87,13 +103,20 @@ export class Agent {
           return;
         }
         if (!toolsEnabled) throw new Error('模型在回合结束时仍请求执行工具');
-        if (reply.text) this.emit({ kind: 'assistant', text: reply.text });
+        uncommittedText = reply.text;
+        if (uncommittedText) this.emit({ kind: 'assistant', text: uncommittedText });
         const toolResult = await this.runTool(reply.call, signal);
         signal.throwIfAborted();
         history.push(...reply.history, ...adapter.result(reply.call, toolResult));
+        uncommittedText = undefined;
       }
     } catch (error) {
-      if (signal.aborted) return;
+      if (signal.aborted) {
+        if (uncommittedText && history.includes(userMessage)) {
+          history.push({ role: 'assistant', content: uncommittedText });
+        }
+        return;
+      }
       await this.tools.whenActive(signal).catch(() => undefined);
       if (!signal.aborted) this.emit({ kind: 'error', text: message(error) });
     } finally {

@@ -2,9 +2,10 @@ import { protocols, readSettings, saveSettings } from './agent/settings.ts';
 import type { ModelSettings, Protocol } from './agent/settings.ts';
 import type { Conversation } from './agent/agent.ts';
 import { mountEditor } from './editor/editor.ts';
-import { builtInLevels } from './level/builtin.ts';
+import { playableError } from './level/definition.ts';
 import type { LevelDefinition } from './level/definition.ts';
-import { completion, loadDraft, markCompleted, rememberLevel, saveDraft } from './storage/local.ts';
+import { createLevel, migrateDraft, migrateProgress, readCatalog, readProgress, updateLevel, updateProgress } from './storage/game.ts';
+import type { LevelEntry, Progress } from './storage/game.ts';
 import { element } from './ui/elements.ts';
 import { renderHome, renderLevels } from './ui/front.ts';
 import { mountRun } from './ui/run.ts';
@@ -13,7 +14,7 @@ import './style.css';
 
 const app = element(document, '#app');
 app.innerHTML = `
-  <a class="corner-control brand-mark" href="#/" aria-label="返回主界面"></a>
+  <a class="corner-control brand-mark" href="#/" data-brand aria-label="返回主界面"></a>
   <button type="button" class="corner-control menu-toggle" aria-label="游戏菜单" aria-haspopup="dialog" data-menu-toggle hidden><span aria-hidden="true"></span></button>
   <img class="scene-backdrop" src="${backdropURL}" alt="" data-backdrop>
   <main class="workspace">
@@ -35,6 +36,12 @@ app.innerHTML = `
       </form>
     </section>
   </main>
+  <dialog class="settings-dialog" aria-labelledby="setup-title" data-model-setup>
+    <div class="dialog-header">
+      <h2 id="setup-title">设置模型连接</h2>
+      <form method="dialog"><button class="icon-button" aria-label="关闭设置">×</button></form>
+    </div>
+  </dialog>
   <dialog class="pause-menu" aria-labelledby="menu-title" data-menu>
     <div class="dialog-header">
       <h2 id="menu-title">游戏菜单</h2>
@@ -49,10 +56,12 @@ app.innerHTML = `
 
 const workspace = element(app, '[data-workspace]');
 const backdrop = element(app, '[data-backdrop]');
+const brand = element(app, '[data-brand]');
 const menuToggle = element<HTMLButtonElement>(app, '[data-menu-toggle]');
 const menu = element<HTMLDialogElement>(app, '[data-menu]');
 const resumeButton = element<HTMLButtonElement>(menu, '[data-resume]');
 const settingsScene = element(app, '[data-settings-scene]');
+const modelSetup = element<HTMLDialogElement>(app, '[data-model-setup]');
 const settingsBack = element<HTMLAnchorElement>(settingsScene, '[data-settings-back]');
 const settingsForm = element<HTMLFormElement>(settingsScene, 'form');
 const settingsFields = element<HTMLFieldSetElement>(settingsForm, 'fieldset');
@@ -68,12 +77,19 @@ const submitSettings = element<HTMLButtonElement>(settingsForm, 'button[type="su
 
 for (const [protocol, { label }] of Object.entries(protocols)) protocolInput.add(new Option(label, protocol));
 
-const firstLevel = builtInLevels[0];
-let draft = loadDraft(firstLevel.level);
+let library: LevelEntry[] = [];
+let warnings: string[] = [];
+let progress: Progress = { levels: {} };
+const editorWrites = new Map<string, Promise<void>>();
+let latestSave = 0;
 let model: ModelSettings | null = null;
+let modelKnown = false;
+let firstPlayChecked = false;
 let activeRun: ReturnType<typeof mountRun> | undefined;
 const conversations = new Map<string, Conversation>();
+let initialized = false;
 let mountedRoute = '';
+let routeRequest = 0;
 let settingsRequest = 0;
 let saving = false;
 
@@ -95,10 +111,30 @@ function openSettings() {
   location.hash = '#/settings';
 }
 
-function renderRoute() {
+async function renderRoute() {
+  if (!initialized) return;
+  const request = ++routeRequest;
   const route = location.hash || '#/';
+  const isPlay = route === '#/play' || route.startsWith('#/play/');
+  const isEditor = route.startsWith('#/create/');
+  const custom = route === '#/levels/custom';
+  const isLevels = route === '#/levels' || custom || route === '#/create';
+  const builtIns = library.filter(({ kind }) => kind === 'builtin');
+  const id = route === '#/play' ? builtIns[0].id : route.split('/')[2];
+  const leavingEditor = mountedRoute.startsWith('#/create/') && route !== '#/settings';
+  while (true) {
+    const pending = [editorWrites.get(id), leavingEditor ? editorWrites.get(mountedRoute.split('/')[2]) : undefined];
+    if (!pending.some(Boolean)) break;
+    await Promise.allSettled(pending);
+    if (request !== routeRequest || route !== (location.hash || '#/')) return;
+  }
   menu.close();
-  menuToggle.hidden = route !== '#/create' && route !== '#/play' && !route.startsWith('#/play/');
+  if (modelSetup.open) {
+    modelSetup.close();
+    settingsScene.append(settingsForm);
+  }
+  menuToggle.hidden = true;
+  brand.hidden = isEditor;
   if (route === '#/settings') {
     if (!settingsScene.hidden) return;
     settingsBack.href = mountedRoute || '#/';
@@ -117,28 +153,42 @@ function renderRoute() {
     workspace.hidden = false;
     keyInput.value = '';
     syncPause();
-    if (mountedRoute === route) {
-      backdrop.hidden = Boolean(activeRun) || route === '#/create';
-      if (route === '#/levels') renderLevels(workspace);
+    if (mountedRoute === route && activeRun) {
+      backdrop.hidden = true;
+      menuToggle.hidden = false;
       focusTitle(workspace);
       return;
     }
   }
-  if (route === '#/create') {
-    renderEditor();
-  } else if (route === '#/play' || route.startsWith('#/play/')) {
-    const level = builtInLevels.find(({ id }) => route === `#/play/${id}`) ?? firstLevel;
-    rememberLevel(level.id);
-    renderRun(level.level, level.id);
-  } else {
-    disposeScene();
-    backdrop.hidden = false;
-    const isLevels = route === '#/levels';
-    if (isLevels) renderLevels(workspace);
-    else renderHome(workspace);
-  }
+
+  disposeScene();
   mountedRoute = route;
+  const entry = library.find((level) => level.id === id);
+  if (isEditor && entry?.kind === 'custom') {
+    renderEditor(entry);
+  } else if (isPlay && entry && !playableError(entry.level)) {
+    const index = builtIns.findIndex((level) => level.id === entry.id);
+    renderRun(entry, index === -1 ? undefined : builtIns[index + 1]);
+  } else {
+    backdrop.hidden = false;
+    brand.hidden = false;
+    if (isLevels || isPlay || isEditor) {
+      const showCustom = custom || route === '#/create' || isEditor || entry?.kind === 'custom';
+      renderLevels(workspace, showCustom ? library.filter(({ kind }) => kind === 'custom') : builtIns,
+        progress, showCustom, warnings, async () => {
+          const created = await createLevel();
+          library.push(created);
+          if ((location.hash || '#/') === route) location.hash = `#/create/${created.id}`;
+        });
+    } else {
+      renderHome(workspace, builtIns, progress);
+    }
+  }
   focusTitle(workspace);
+  if (isPlay && activeRun) {
+    if (modelKnown) maybeOpenModelSetup();
+    else void loadSettings(false);
+  }
 }
 
 function focusTitle(root: HTMLElement) {
@@ -150,31 +200,73 @@ function focusTitle(root: HTMLElement) {
   window.scrollTo(0, 0);
 }
 
-function renderEditor() {
-  disposeScene();
+function renderEditor(entry: LevelEntry) {
   backdrop.hidden = true;
+  menuToggle.hidden = false;
+  const { id } = entry;
   activeRun = mountEditor(workspace, {
-    level: draft, model, conversation: conversationFor('create'), openSettings,
-    save(level) {
-      draft = level;
-      saveDraft(level);
+    level: entry.level, model, conversation: conversationFor(`create/${id}`), openSettings,
+    save(level: LevelDefinition) {
+      const previous = editorWrites.get(id) ?? Promise.resolve();
+      const pending = previous.catch(() => {}).then(async () => {
+        if (editorWrites.get(id) !== pending) return;
+        const saved = await updateLevel(id, level);
+        const index = library.findIndex((item) => item.id === id);
+        library[index] = saved;
+      });
+      editorWrites.set(id, pending);
+      void pending.finally(() => {
+        if (editorWrites.get(id) === pending) editorWrites.delete(id);
+      }).catch(() => {});
+      return pending;
     },
   });
 }
 
-function renderRun(level: LevelDefinition, id: string) {
-  disposeScene();
+function renderRun(entry: LevelEntry, next?: LevelEntry) {
   backdrop.hidden = true;
+  menuToggle.hidden = false;
+  const { id, level, revision } = entry;
+  const record = progress.levels[id];
   activeRun = mountRun(workspace, {
     level, model, conversation: conversationFor(`play/${id}`),
-    completedAt: completion(id)?.completedAt,
-    onComplete: (durationMS) => markCompleted(id, durationMS),
+    completedAt: record?.completedAt,
+    savedRun: record?.revision === revision ? record.run : undefined,
+    nextLevel: next && `#/play/${next.id}`,
+    async onProgress(patch) {
+      const savedAt = latestSave = Math.max(Date.now(), latestSave + 1);
+      const previous = progress.levels[id];
+      const local = { ...previous, revision, savedAt, run: patch.run ?? undefined };
+      if (patch.won) {
+        local.completedAt ??= new Date().toISOString();
+        if (patch.durationMS !== undefined && (local.bestDurationMS === undefined || patch.durationMS < local.bestDurationMS)) {
+          local.bestDurationMS = patch.durationMS;
+        }
+      }
+      progress.levels[id] = local;
+      if (patch.recent && entry.kind === 'builtin') progress.recentBuiltin = id;
+      const saved = await updateProgress(id, { ...patch, revision, savedAt });
+      if ((progress.levels[id]?.savedAt ?? 0) <= (saved.savedAt ?? 0)) progress.levels[id] = saved;
+    },
     openSettings,
   });
 }
 
 function syncPause() {
-  activeRun?.setPaused(menu.open || !settingsScene.hidden);
+  activeRun?.setPaused(menu.open || modelSetup.open || !settingsScene.hidden);
+}
+
+function maybeOpenModelSetup() {
+  if (firstPlayChecked || !modelKnown || !activeRun || !mountedRoute.startsWith('#/play') || !settingsScene.hidden) return;
+  firstPlayChecked = true;
+  if (model) return;
+  menu.close();
+  settingsMessage('');
+  fillSettings();
+  if (!saving) lockSettings(false);
+  modelSetup.append(settingsForm);
+  modelSetup.showModal();
+  syncPause();
 }
 
 function openMenu() {
@@ -226,7 +318,9 @@ async function loadSettings(inScene: boolean) {
   try {
     const next = await readSettings(AbortSignal.timeout(5000));
     if (request !== settingsRequest) return;
+    modelKnown = true;
     applySettings(next);
+    maybeOpenModelSetup();
     if (inScene && !settingsScene.hidden) fillSettings();
   } catch {
     if (request === settingsRequest && inScene) settingsMessage('无法读取模型设置', true);
@@ -243,8 +337,10 @@ async function commitSettings(value: Parameters<typeof saveSettings>[0]) {
   settingsMessage('');
   try {
     applySettings(await saveSettings(value, AbortSignal.timeout(10000)), true);
+    modelKnown = true;
     fillSettings();
     settingsMessage(value ? '设置已保存' : '已清除模型连接');
+    if (value && modelSetup.open) modelSetup.close();
   } catch (error) {
     settingsMessage(error instanceof Error && error.name !== 'TimeoutError' ? error.message : '保存模型设置超时', true);
   } finally {
@@ -255,9 +351,15 @@ async function commitSettings(value: Parameters<typeof saveSettings>[0]) {
 
 menuToggle.addEventListener('click', openMenu);
 menu.addEventListener('close', syncPause);
+modelSetup.addEventListener('close', () => {
+  if (modelSetup.open || settingsForm.parentElement !== modelSetup) return;
+  settingsScene.append(settingsForm);
+  keyInput.value = '';
+  syncPause();
+});
 resumeButton.addEventListener('click', () => menu.close());
 window.addEventListener('keydown', (event) => {
-  if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || menu.open) return;
+  if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || document.querySelector('dialog[open]')) return;
   if (settingsScene.hidden && menuToggle.hidden) return;
   event.preventDefault();
   if (settingsScene.hidden) openMenu();
@@ -278,6 +380,30 @@ settingsForm.addEventListener('submit', (event) => {
   });
 });
 clearSettings.addEventListener('click', () => { void commitSettings(null); });
-window.addEventListener('hashchange', renderRoute);
-renderRoute();
-if (settingsScene.hidden) void loadSettings(false);
+window.addEventListener('hashchange', () => { void renderRoute(); });
+
+async function initialize() {
+  workspace.innerHTML = '<p class="muted" role="status">正在读取本地关卡和进度…</p>';
+  try {
+    const [catalog, saved] = await Promise.all([readCatalog(), readProgress()]);
+    library = catalog.levels;
+    warnings = catalog.warnings ?? [];
+    progress = saved;
+    const [draft, oldProgress] = await Promise.allSettled([migrateDraft(), migrateProgress()]);
+    if (draft.status === 'fulfilled' && draft.value && !library.some(({ id }) => id === draft.value?.id)) library.push(draft.value);
+    if (oldProgress.status === 'fulfilled' && oldProgress.value) progress = oldProgress.value;
+    if (draft.status === 'rejected' || oldProgress.status === 'rejected') {
+      warnings.push('部分旧版浏览器存档未能迁移，刷新可重试。');
+    }
+    latestSave = Object.values(progress.levels).reduce((latest, item) => Math.max(latest, item.savedAt ?? 0), progress.recentBuiltinAt ?? 0);
+    initialized = true;
+    void renderRoute();
+  } catch (error) {
+    workspace.innerHTML = '<p class="invalid" role="status"></p><button type="button">重试</button>';
+    element(workspace, 'p').textContent = error instanceof Error ? error.message : '无法读取本地关卡和进度';
+    element(workspace, 'button').addEventListener('click', () => { void initialize(); }, { once: true });
+  }
+}
+
+void initialize();
+void loadSettings(false);

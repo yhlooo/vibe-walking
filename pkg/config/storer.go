@@ -6,7 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
+
+	"github.com/yhlooo/vibe-walking/internal/jsonfile"
 )
 
 // LoadConfig 加载配置
@@ -36,32 +37,5 @@ func LoadConfig(path string) (*Config, error) {
 
 // SaveConfig 保存配置
 func SaveConfig(ctx context.Context, cfg *Config, path string) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".settings-*.json")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	defer tmp.Close()
-	encoder := json.NewEncoder(tmp)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(cfg); err != nil {
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return jsonfile.Write(ctx, path, cfg)
 }

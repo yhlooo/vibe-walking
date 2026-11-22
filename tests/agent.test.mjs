@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { Agent } from '../src/agent/agent.ts';
+import { Agent, defaultPrompt, respawnInfo } from '../src/agent/agent.ts';
 import { protocols } from '../src/agent/settings.ts';
 import { World } from '../src/game/world.ts';
 import { readLevel } from '../src/level/definition.ts';
@@ -108,6 +108,52 @@ test('a response arriving after cancellation never schedules an old action', asy
     receive(Response.json(fixture('OpenAIResponses', 1)));
     await pending;
     assert.equal(agent.busy, false);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('a canceled turn keeps chat, and a respawn notice prefixes only the next user message', async () => {
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  const conversation = { events: [], history: [] };
+  const model = { api: 'OpenAIResponses', model: 'mock', baseURL: '', hasAPIKey: false };
+  const tools = {
+    readScreen: () => png,
+    async whenActive(signal) { signal.throwIfAborted(); },
+    async execute() {},
+    outcome: () => 'active',
+  };
+  let received;
+  const requested = new Promise((resolve) => { received = resolve; });
+  globalThis.fetch = async (_url, request) => {
+    const body = JSON.parse(request.body);
+    requests.push(body);
+    if (requests.length === 1) {
+      received();
+      await new Promise((_, reject) => {
+        request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true });
+      });
+    }
+    return Response.json(fixture('OpenAIResponses', 3));
+  };
+  try {
+    const agent = new Agent(model, defaultPrompt, tools, () => {}, conversation);
+    const pending = agent.send('向右走');
+    await requested;
+    agent.dispose();
+    await pending;
+    assert.deepEqual(conversation.events.map(({ text }) => text), ['向右走']);
+    conversation.pendingSystemInfo = respawnInfo;
+    const restarted = new Agent(model, defaultPrompt, tools, () => {}, conversation);
+    await restarted.send('看看画面');
+    await restarted.send('等一秒');
+    const last = requests.at(-1);
+    assert.doesNotMatch(last.instructions, /红色按钮|玩家/);
+    assert.deepEqual(last.input.filter(({ role }) => role === 'user').map(({ content }) => content),
+      ['向右走', `${respawnInfo}\n看看画面`, '等一秒']);
+    assert.deepEqual(conversation.events.filter(({ kind }) => kind === 'player').map(({ text }) => text),
+      ['向右走', '看看画面', '等一秒']);
   } finally {
     globalThis.fetch = originalFetch;
   }

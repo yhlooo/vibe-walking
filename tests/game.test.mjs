@@ -5,7 +5,7 @@ import { compileActions, Recorder } from '../src/game/actions.ts';
 import { Runtime } from '../src/game/runtime.ts';
 import { idleInput, movePerStep, World } from '../src/game/world.ts';
 import { gridSize, gridSizes, playableError, readLevel, resizeLevel } from '../src/level/definition.ts';
-import { exportLevel, importLevel } from '../src/level/yaml.ts';
+import { exportLevel, importLevel } from '../src/level/json.ts';
 
 const firstLevel = readLevel(JSON.parse(readFileSync(new URL('./fixtures/legacy-level.json', import.meta.url))));
 const right = { direction: 1, jump: false, distance: movePerStep };
@@ -128,12 +128,25 @@ test('recorded keyboard inputs replay exactly, and invalid sequences are rejecte
   assert.throws(() => compileActions({ actions: Array(4).fill({ key: 'sleep', value: 10 }) }), /30 秒/);
 });
 
-test('YAML round trips and rejects duplicate keys, aliases and invalid button support', () => {
-  const yaml = exportLevel(firstLevel);
-  assert.deepEqual(importLevel(yaml), firstLevel);
-  assert.throws(() => importLevel(`${yaml}\nname: duplicate`));
-  assert.throws(() => importLevel('name: &first example\nsystemPrompt: *first'));
-  assert.throws(() => importLevel(yaml.replace('################', '############.###')), /支撑|实心块/);
+test('JSON round trips and rejects invalid maps and unsupported buttons', () => {
+  const json = exportLevel(firstLevel);
+  assert.deepEqual(importLevel(json), firstLevel);
+  assert.throws(() => importLevel(`${json}{}`));
+  assert.throws(() => importLevel(JSON.stringify({ ...firstLevel, extra: true })), /未知字段/);
+  assert.throws(() => importLevel(json.replace('################', '############.###')), /支撑|实心块/);
+});
+
+test('restoring a checkpoint resumes position, jump and inertia on an identical map', () => {
+  const world = new World(firstLevel);
+  repeat(world, right, 10);
+  world.step({ ...right, jump: true });
+  repeat(world, idleInput, 3);
+  const restored = new World(firstLevel, JSON.parse(JSON.stringify(world.save())));
+  for (let i = 0; i < 80; i++) {
+    const input = i < 10 ? right : idleInput;
+    assert.equal(restored.step(input), world.step(input));
+    assert.deepEqual(restored.save(), world.save());
+  }
 });
 
 test('pausing freezes an in-flight action and resumes it without elapsed time', async () => {

@@ -1,6 +1,6 @@
 import { Recorder } from './actions.ts';
 import { idleInput, movePerStep, stepMS, World } from './world.ts';
-import type { Direction, Outcome, Snapshot, StepInput } from './world.ts';
+import type { Direction, Outcome, Snapshot, StepInput, WorldState } from './world.ts';
 import type { LevelDefinition } from '../level/definition.ts';
 
 const leftKeys = ['KeyA', 'ArrowLeft'];
@@ -29,8 +29,8 @@ export class Runtime {
   private accumulator = 0;
   private frame: number;
 
-  constructor(level: LevelDefinition, manual: boolean, draw: (snapshot: Snapshot) => void, ended: (outcome: Outcome) => void) {
-    this.world = new World(level);
+  constructor(level: LevelDefinition, manual: boolean, draw: (snapshot: Snapshot) => void, ended: (outcome: Outcome) => void, saved?: WorldState) {
+    this.world = new World(level, saved);
     this.manual = manual;
     if (manual) this.recorder = new Recorder();
     const signal = this.listeners.signal;
