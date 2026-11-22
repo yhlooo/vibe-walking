@@ -1,18 +1,23 @@
 # VIBE WALKING
 
-用自然语言引导 Vibe 踩下红色按钮即可通关（ Vibe 是画面中的白色方块，也是与你对话的角色）
+用自然语言引导 Vibe 踩下红色按钮（ Vibe 是画面中的白色方块）
+
+![第一关游戏画面，左侧是白色方块 Vibe，右侧是红色按钮](docs/usage/images/gameplay.png)
 
 ## 快速开始
 
-Linux / MacOS
+在终端运行对应命令，安装最新发布版并启动游戏。
+
+Linux / macOS
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/yhlooo/vibe-walking/main/scripts/install.sh | bash -s -- --run
 ```
 
-Windows
+Windows（PowerShell）
 
-```bash
-
+```powershell
+& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/yhlooo/vibe-walking/main/scripts/install.ps1'))) '--run'
 ```
 
 ## 接入 LLM
