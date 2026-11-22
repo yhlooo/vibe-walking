@@ -1,9 +1,29 @@
 #!/bin/bash
 
-set -e
+set -eo pipefail
 
-# 确定版本
-version="${1:-latest}"
+# 解析版本与安装后启动选项
+version=""
+run=false
+for arg in "$@"; do
+  case "${arg}" in
+    --run)
+      run=true
+      ;;
+    -*)
+      echo "Error: unknown option ${arg}" >&2
+      exit 1
+      ;;
+    *)
+      if [[ -n "${version}" ]]; then
+        echo "Usage: bash install.sh [version] [--run]" >&2
+        exit 1
+      fi
+      version="${arg}"
+      ;;
+  esac
+done
+version="${version:-latest}"
 
 # 确定操作系统
 os="$(uname -s)"
@@ -49,8 +69,13 @@ echo -e "\033[34mdownload from ${url}\033[0m"
 
 # 下载、解压
 mkdir -p "${install_dir}"
-curl -fsSL "${url}" | tar -C "${install_dir}" -xzv vibe-walking
-chmod +x "${install_dir}/vibe-walking"
+(
+  temp_dir="$(mktemp -d "${install_dir}/.vibe-walking.XXXXXX")"
+  trap 'rm -rf -- "${temp_dir}"' EXIT
+  curl -fsSL "${url}" | tar -C "${temp_dir}" -xzv vibe-walking
+  chmod +x "${temp_dir}/vibe-walking"
+  mv -f "${temp_dir}/vibe-walking" "${install_dir}/"
+)
 
 # 检查 PATH
 if [[ ":${PATH}:" != *":${install_dir}:"* ]]; then
@@ -66,4 +91,8 @@ if [[ ":${PATH}:" != *":${install_dir}:"* ]]; then
       echo -e "\033[33m         run \`export PATH=\"${install_dir}:\${PATH}\"\` to add\033[0m"
     ;;
   esac
+fi
+
+if [[ "${run}" == true ]]; then
+  exec "${install_dir}/vibe-walking"
 fi

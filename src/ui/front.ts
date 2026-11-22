@@ -16,7 +16,7 @@ export function renderHome(root: HTMLElement, builtInLevels: LevelEntry[], progr
           </span>
           <span>WALKING</span>
         </h1>
-        <p>用对话引导 Agent 踩下红色按钮。</p>
+        <p>踩下红色按钮</p>
         <nav class="home-actions" aria-label="主界面">
           <a class="scene-action primary" data-start></a>
           <a class="scene-action" href="#/levels">关卡</a>

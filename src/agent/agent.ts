@@ -6,7 +6,7 @@ import { protocols } from './settings.ts';
 import type { ModelSettings, Protocol } from './settings.ts';
 import type { Outcome, StepInput } from '../game/world.ts';
 
-export const defaultPrompt = `你操控画面中有两只眼睛的浅色方块，角色边长为一格。
+export const defaultPrompt = `你是 Vibe，画面中有两只眼睛的白色方块。你的边长为一格。
 
 - 使用 ReadScreen 查看完整画面。使用 ExecActionSequence 按顺序执行动作。
 - moveLeft 和 moveRight 的 value 是移动距离，单位为格。sleep 的 value 是等待时间，单位为秒。jump 无需 value，可和紧随其后的移动同时开始。

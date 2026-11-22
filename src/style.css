@@ -88,22 +88,22 @@ button.text-button:hover { background: transparent; border-color: transparent; t
 }
 
 .workspace { width: min(100%, 1710px); margin-inline: auto; padding: clamp(64px, 7vw, 96px) clamp(16px, 4vw, 66px) clamp(24px, 3vw, 44px); }
+.workspace:has([data-workspace]:not([hidden]) .run-layout) { width: min(100%, 2250px); padding-inline: clamp(16px, 2vw, 48px); }
 .workspace-title { display: flex; min-width: 0; align-items: center; gap: 12px; }
 h1 { font-weight: 800; font-size: clamp(20px, 2.6vw, 32px); letter-spacing: -.015em; overflow-wrap: anywhere; }
 h2 { font-size: 15px; font-weight: 730; }
 .completion { border-radius: 5px; background: #253b35; color: var(--success); font-size: 12px; padding: 5px 7px; white-space: nowrap; }
 .panel { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; min-width: 0; }
 .run-layout, .editor-layout { display: grid; gap: 14px; }
-.run-layout { grid-template-columns: minmax(245px, 1fr) minmax(0, 2.05fr); }
-.editor-layout { grid-template-columns: minmax(220px, .95fr) minmax(0, 2.5fr) minmax(176px, .7fr); align-items: start; }
-.editor-play, .editor-play .run-layout { display: contents; }
+.run-layout { grid-template-columns: clamp(245px, 17vw, 360px) minmax(0, 1502px); justify-content: center; }
+.editor-layout { grid-template-columns: minmax(0, 1fr) clamp(176px, 16vw, 240px); align-items: start; }
+.editor-layout .run-layout { grid-template-columns: clamp(220px, 17vw, 360px) minmax(0, 1502px); }
 .run-title { padding: 14px 16px; }
 .run-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px 12px; margin-left: auto; }
 .manual-control { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; cursor: pointer; }
 .manual-control input, .settings-form .checkbox input { accent-color: var(--accent); }
-.stage-panel { align-self: start; }
 .stage { background: #201c31; }
-.stage canvas { width: min(100%, calc(65svh * var(--scene-ratio, 1.5))); height: auto; aspect-ratio: var(--scene-ratio, 1.5); margin-inline: auto; display: block; }
+.stage canvas { width: 100%; max-width: 1500px; height: auto; aspect-ratio: var(--scene-ratio, 1.5); margin-inline: auto; display: block; }
 .stage canvas:focus-visible { outline-offset: -3px; }
 .stage-footer { display: flex; justify-content: space-between; align-items: center; gap: 10px; min-height: 48px; padding: 11px 14px; font-size: 13px; border-top: 1px solid var(--border); color: #d9cfe6; }
 .stage-footer > span:empty { display: none; }
@@ -113,13 +113,13 @@ h2 { font-size: 15px; font-weight: 730; }
 .success { color: var(--success); font-weight: 700; }
 .invalid { color: var(--danger); }
 
-.run-sidebar { display: flex; flex-direction: column; min-height: 340px; height: min(69svh, 670px); position: relative; }
-.run-sidebar:has(.recording-panel:not([hidden])) { min-height: 550px; }
+.run-sidebar { display: flex; flex-direction: column; min-height: 0; contain: size; }
 .sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 51px; padding: 10px 14px; }
 .sidebar-header { border-bottom: 1px solid var(--border); }
-.messages { display: flex; flex-direction: column; flex: 1 0 auto; height: 0; min-height: 160px; overflow: auto; padding: 15px 14px; gap: 12px; }
+.messages { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; overflow: auto; padding: 15px 14px; gap: 12px; }
+.messages > *, .sidebar-header, .composer, .recording-panel { flex: none; }
 .chat-empty { display: grid; justify-items: start; align-content: center; min-height: 100%; gap: 9px; padding: 4px 3px; }
-.agent-mark { display: grid; place-content: center; width: 32px; height: 32px; border-radius: 8px; background: #342846; color: var(--accent); font-weight: 800; font-size: 24px; letter-spacing: .04em; }
+.vibe-mark { display: block; }
 .chat-empty strong { font-size: 15px; }
 .chat-empty p { font-size: 13px; color: var(--muted); line-height: 1.6; }
 .message { padding: 10px 12px; border: 1px solid #3a3249; border-radius: 9px; background: #242030; overflow-wrap: anywhere; }
@@ -132,7 +132,7 @@ h2 { font-size: 15px; font-weight: 730; }
 .tool-event img { width: 100%; display: block; margin-top: 8px; border-radius: 3px; }
 .tool-event pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; margin-bottom: 0; }
 .composer { padding: 12px 13px; border-top: 1px solid var(--border); }
-.composer textarea { display: block; width: 100%; min-height: 63px; resize: vertical; }
+.composer textarea { display: block; width: 100%; min-height: 63px; max-height: 145px; resize: vertical; }
 .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; }
 .composer-footer button[type="submit"] { margin-left: auto; min-width: 68px; }
 .recording-panel { border-top: 1px solid var(--border); }
@@ -233,16 +233,18 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 
 @media (max-width: 1080px) {
   .editor-layout { grid-template-columns: minmax(0, 1fr) minmax(174px, .36fr); }
-  .editor-layout .stage-panel { grid-area: 1 / 1; }
-  .editor-layout .run-sidebar { grid-area: 2 / 1; }
-  .editor-tools { grid-area: 1 / 2 / span 2; }
+  .editor-layout .run-layout { grid-template-columns: minmax(0, 1fr); }
+  .editor-layout .stage-panel { grid-row: 1; }
+  .editor-layout .run-sidebar { contain: none; height: clamp(340px, 67svh, 520px); }
+  .editor-layout .run-sidebar:has(.recording-panel:not([hidden])) { min-height: 500px; }
 }
 @media (max-width: 680px) {
   .run-layout, .editor-layout { grid-template-columns: minmax(0, 1fr); }
-  .run-layout .stage-panel, .editor-layout .stage-panel { grid-area: 1 / 1; }
-  .editor-layout .run-sidebar { grid-area: 3 / 1; }
-  .editor-tools { grid-area: 2 / 1; }
-  .run-sidebar { height: min(67svh, 520px); min-height: 340px; }
+  .editor-play, .editor-play .run-layout { display: contents; }
+  .run-layout .stage-panel { grid-row: 1; }
+  .editor-layout .run-sidebar { grid-row: 3; }
+  .editor-tools { grid-row: 2; }
+  .run-sidebar { contain: none; height: clamp(340px, 67svh, 520px); }
   .stage-footer { flex-wrap: wrap; }
   .scene-backdrop { object-position: 65% bottom; }
   .scene-backdrop:not([hidden]) + .workspace::before { background: linear-gradient(90deg, #13121bf0, #1714248c 90%); }

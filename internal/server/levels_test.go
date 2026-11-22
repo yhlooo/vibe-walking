@@ -16,10 +16,9 @@ import (
 
 func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), ".vibewalking")
-	path := filepath.Join(dir, "settings.json")
 	start := func() http.Handler {
 		t.Helper()
-		handler, err := newHandler(path, true, logr.Discard())
+		handler, err := newHandler(dir, true, logr.Discard())
 		if err != nil {
 			t.Fatal(err)
 		}

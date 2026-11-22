@@ -19,7 +19,7 @@ import (
 )
 
 // Serve starts the local application and serves it until ctx is canceled.
-func Serve(ctx context.Context, address, settingsPath string, onListen func(string)) error {
+func Serve(ctx context.Context, address, dataDir string, onListen func(string)) error {
 	host, port, err := net.SplitHostPort(address)
 	if err != nil {
 		return fmt.Errorf("invalid listen address: %w", err)
@@ -27,7 +27,7 @@ func Serve(ctx context.Context, address, settingsPath string, onListen func(stri
 	if host == "" {
 		host = "0.0.0.0"
 	}
-	handler, err := newHandler(settingsPath, loopbackHost(host), logr.FromContextOrDiscard(ctx))
+	handler, err := newHandler(dataDir, loopbackHost(host), logr.FromContextOrDiscard(ctx))
 	if err != nil {
 		return err
 	}
@@ -78,7 +78,8 @@ func Serve(ctx context.Context, address, settingsPath string, onListen func(stri
 	}
 }
 
-func newHandler(settingsPath string, localOnly bool, logger logr.Logger) (http.Handler, error) {
+func newHandler(dataDir string, localOnly bool, logger logr.Logger) (http.Handler, error) {
+	settingsPath := filepath.Join(dataDir, "settings.json")
 	cfg, err := config.LoadConfig(settingsPath)
 	if err != nil {
 		return nil, err
@@ -87,7 +88,7 @@ func newHandler(settingsPath string, localOnly bool, logger logr.Logger) (http.H
 	if err != nil {
 		return nil, err
 	}
-	library, err := levels.NewStore(filepath.Dir(settingsPath))
+	library, err := levels.NewStore(dataDir)
 	if err != nil {
 		return nil, err
 	}

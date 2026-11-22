@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -32,8 +33,9 @@ func TestSettingsAndThreeProxies(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	path := filepath.Join(t.TempDir(), ".vibewalking", "settings.json")
-	handler, err := newHandler(path, true, logr.Discard())
+	dir := filepath.Join(t.TempDir(), ".vibewalking")
+	path := filepath.Join(dir, "settings.json")
+	handler, err := newHandler(dir, true, logr.Discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,10 +83,10 @@ func TestSettingsAndThreeProxies(t *testing.T) {
 	}
 
 	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 		t.Fatalf("settings file permissions: %v %v", info, err)
 	}
-	restarted, err := newHandler(path, true, logr.Discard())
+	restarted, err := newHandler(dir, true, logr.Discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +108,7 @@ func TestSettingsAndThreeProxies(t *testing.T) {
 }
 
 func TestStaticAssetsAndOriginGuard(t *testing.T) {
-	handler, err := newHandler(filepath.Join(t.TempDir(), "settings.json"), true, logr.Discard())
+	handler, err := newHandler(t.TempDir(), true, logr.Discard())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,8 +134,9 @@ func TestStaticAssetsAndOriginGuard(t *testing.T) {
 }
 
 func TestSaveFailureKeepsTheActiveConfig(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "settings.json")
-	handler, err := newHandler(path, true, logr.Discard())
+	dir := t.TempDir()
+	path := filepath.Join(dir, "settings.json")
+	handler, err := newHandler(dir, true, logr.Discard())
 	if err != nil {
 		t.Fatal(err)
 	}

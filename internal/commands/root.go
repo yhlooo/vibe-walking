@@ -4,10 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
-	"time"
 
 	"github.com/bombsimon/logrusr/v4"
 	"github.com/go-logr/logr"
@@ -67,12 +64,14 @@ func NewOptions() Options {
 type Options struct {
 	Listen      string
 	OpenBrowser bool
+	DataDir     string
 }
 
 // AddPFlags 将选项绑定到命令行参数
 func (o *Options) AddPFlags(fs *pflag.FlagSet) {
 	fs.StringVarP(&o.Listen, "listen", "l", o.Listen, "HTTP listen address")
 	fs.BoolVar(&o.OpenBrowser, "open-browser", o.OpenBrowser, "Open the game in a browser after startup")
+	fs.StringVarP(&o.DataDir, "data-dir", "d", o.DataDir, "Local data directory (defaults to ~/.vibewalking)")
 }
 
 // NewCommand 创建根命令
@@ -115,12 +114,16 @@ func NewCommand(name string) *cobra.Command {
 		},
 
 		RunE: func(cmd *cobra.Command, args []string) error {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return fmt.Errorf("find settings directory: %w", err)
+			dataDir := opts.DataDir
+			if dataDir == "" {
+				home, err := os.UserHomeDir()
+				if err != nil {
+					return fmt.Errorf("find default data directory: %w", err)
+				}
+				dataDir = filepath.Join(home, ".vibewalking")
 			}
 			ctx := cmd.Context()
-			return server.Serve(ctx, opts.Listen, filepath.Join(home, ".vibewalking", "settings.json"), func(address string) {
+			return server.Serve(ctx, opts.Listen, dataDir, func(address string) {
 				fmt.Fprintln(cmd.OutOrStdout(), address)
 				if opts.OpenBrowser {
 					go func() {
@@ -145,17 +148,4 @@ func NewCommand(name string) *cobra.Command {
 	)
 
 	return cmd
-}
-
-func openBrowser(ctx context.Context, address string) error {
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	switch runtime.GOOS {
-	case "darwin":
-		return exec.CommandContext(ctx, "open", address).Run()
-	case "linux":
-		return exec.CommandContext(ctx, "xdg-open", address).Run()
-	default:
-		return fmt.Errorf("automatic browser opening is unavailable on %s", runtime.GOOS)
-	}
 }

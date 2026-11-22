@@ -27,10 +27,10 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   root.innerHTML = `
     <div class="run-layout">
       <aside class="panel run-sidebar">
-        <div class="sidebar-header"><h2>与 Agent 对话</h2><button class="text-button" type="button" data-clear-chat disabled>清空历史</button></div>
+        <div class="sidebar-header"><h2>与 Vibe 对话</h2><button class="text-button" type="button" data-clear-chat disabled>清空历史</button></div>
         <div class="messages" role="log" aria-label="对话与工具事件" data-messages></div>
         <form class="composer" data-composer>
-          <textarea aria-label="发给 Agent 的消息" placeholder="告诉 Agent 下一步怎么做…" rows="3" required></textarea>
+          <textarea aria-label="发给 Vibe 的消息" placeholder="告诉 Vibe 下一步怎么做…" rows="3" required></textarea>
           <div class="composer-footer"><span class="subtle" data-run-status></span><button class="text-button" type="button" data-connect>配置模型</button><button class="primary" type="submit" disabled>发送</button></div>
         </form>
         ${editor ? `
@@ -117,7 +117,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     connect.hidden = Boolean(model) || manual;
     input.disabled = ended || manual;
     clearChat.disabled = conversation.events.length === 0;
-    status.textContent = manual ? '手动控制中' : busy ? 'Agent 行动中' : ended ? '关卡已结束' : agent ? '等待指令' : '';
+    status.textContent = manual ? '手动控制中' : busy ? 'Vibe 行动中' : ended ? '关卡已结束' : agent ? '等待指令' : '';
   }
 
   function refreshRecording() {
@@ -206,9 +206,9 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   function showEmptyChat() {
     messages.innerHTML = `
       <div class="chat-empty">
-        <span class="agent-mark" aria-hidden="true">··</span>
-        <strong>告诉 Agent 下一步</strong>
-        <p>${editor ? '描述你希望 Agent 怎样探索这张地图。' : '试着说「先看看画面，再向右走到红色按钮。」'}</p>
+        <img class="vibe-mark" src="/favicon.svg" alt="" width="32" height="32">
+        <strong>告诉 Vibe 下一步</strong>
+        <p>${editor ? '描述你希望 Vibe 怎样探索这张地图。' : '试着说「先看看画面，再向右走到红色按钮。」'}</p>
       </div>`;
   }
 
@@ -379,7 +379,7 @@ function appendEvent(log: HTMLElement, event: ChatEvent) {
     if (event.image) {
       const image = document.createElement('img');
       image.src = event.image;
-      image.alt = 'Agent 看到的关卡截图';
+      image.alt = 'Vibe 看到的关卡截图';
       entry.append(image);
     } else if (event.detail) {
       const content = document.createElement('pre');
@@ -391,7 +391,7 @@ function appendEvent(log: HTMLElement, event: ChatEvent) {
     const entry = document.createElement('div');
     entry.className = `message ${event.kind}`;
     const name = document.createElement('span');
-    name.textContent = event.kind === 'assistant' ? 'Agent' : event.kind === 'player' ? '你' : '连接提示';
+    name.textContent = event.kind === 'assistant' ? 'Vibe' : event.kind === 'player' ? '你' : '连接提示';
     const content = document.createElement('p');
     content.textContent = event.text;
     entry.append(name, content);
