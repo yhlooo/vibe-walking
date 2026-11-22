@@ -81,7 +81,13 @@ export function renderLevels(
     const card = document.createElement('article');
     card.className = 'level-card';
     card.innerHTML = `
-      ${custom ? '<a class="scene-action level-edit" data-level-edit>编辑</a>' : ''}
+      ${custom ? `
+        <a class="scene-action level-edit" title="编辑" data-level-edit>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M15 5l4 4M4 20l1-5L16 4a2.8 2.8 0 0 1 4 4L9 19l-5 1z"/>
+          </svg>
+        </a>` : ''}
       ${problem ? '<div data-level-content>' : '<a data-level-content>'}
       <canvas width="480" height="270" aria-hidden="true"></canvas>
       <div class="level-caption">

@@ -144,7 +144,7 @@ async function renderRoute() {
     syncPause();
     settingsMessage('');
     fillSettings();
-    focusTitle(settingsScene);
+    window.scrollTo(0, 0);
     void loadSettings(true);
     return;
   }
@@ -156,7 +156,7 @@ async function renderRoute() {
     if (mountedRoute === route && activeRun) {
       backdrop.hidden = true;
       menuToggle.hidden = false;
-      focusTitle(workspace);
+      window.scrollTo(0, 0);
       return;
     }
   }
@@ -184,20 +184,11 @@ async function renderRoute() {
       renderHome(workspace, builtIns, progress);
     }
   }
-  focusTitle(workspace);
+  window.scrollTo(0, 0);
   if (isPlay && activeRun) {
     if (modelKnown) maybeOpenModelSetup();
     else void loadSettings(false);
   }
-}
-
-function focusTitle(root: HTMLElement) {
-  const heading = root.querySelector('h1');
-  if (heading && !root.querySelector('.home-scene')) {
-    heading.tabIndex = -1;
-    heading.focus({ preventScroll: true });
-  }
-  window.scrollTo(0, 0);
 }
 
 function renderEditor(entry: LevelEntry) {

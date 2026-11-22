@@ -43,7 +43,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       <section class="panel stage-panel" aria-label="关卡画面">
         <div class="workspace-title run-title"><h1 data-level-title></h1><span class="completion" data-completed hidden>已通关</span></div>
         <div class="stage">
-          <canvas width="960" height="540" aria-label="游戏画面" tabindex="-1"></canvas>
+          <canvas width="960" height="540" aria-label="游戏画面"${editor ? ' tabindex="-1"' : ''}></canvas>
           <div class="game-over" role="group" aria-labelledby="game-over-title" data-game-over hidden>
             <h2 id="game-over-title">Game Over</h2>
             <button type="button" class="primary" data-retry-run>再来一次</button>
