@@ -1,10 +1,15 @@
-import { columns, gravityDirection, rows } from '../level/definition.ts';
+import { gravityDirection, gridSize } from '../level/definition.ts';
 import type { Point } from '../level/definition.ts';
 import type { Snapshot } from '../game/world.ts';
 
 type EditOverlay = { hover?: Point; spawn?: Point };
 
 export function drawScene(canvas: HTMLCanvasElement, { level, player, outcome }: Snapshot, edit?: EditOverlay) {
+  const { rows, columns } = gridSize(level.tiles);
+  const targetWidth = Math.round(canvas.height * columns / rows);
+  if (canvas.width !== targetWidth) canvas.width = targetWidth;
+  const ratio = String(columns / rows);
+  if (canvas.style.getPropertyValue('--scene-ratio') !== ratio) canvas.style.setProperty('--scene-ratio', ratio);
   const context = canvas.getContext('2d');
   if (!context) throw new Error('当前浏览器无法创建游戏画面');
   const { width, height } = canvas;
@@ -19,16 +24,16 @@ export function drawScene(canvas: HTMLCanvasElement, { level, player, outcome }:
   context.fillStyle = '#a698e108';
   context.beginPath();
   context.moveTo(0, 0);
-  context.lineTo(4, 0);
-  context.lineTo(8, rows);
+  context.lineTo(columns * 0.25, 0);
+  context.lineTo(columns * 0.5, rows);
   context.lineTo(0, rows);
   context.fill();
   context.fillStyle = '#a698e10c';
   context.beginPath();
-  context.moveTo(12, 0);
+  context.moveTo(columns * 0.75, 0);
   context.lineTo(columns, 0);
   context.lineTo(columns, rows);
-  context.lineTo(8.5, rows);
+  context.lineTo(columns * 0.53, rows);
   context.fill();
 
   const gravity = gravityDirection(level.gravity);
@@ -47,8 +52,13 @@ export function drawScene(canvas: HTMLCanvasElement, { level, player, outcome }:
     }
   }
 
-  // Draw over the character's feet so the pressed state remains visible in tool images.
-  drawCharacter(context, edit?.spawn ?? player, player.facing, Boolean(edit));
+  if (edit?.spawn) {
+    const { x, y } = edit.spawn;
+    context.strokeStyle = '#c2a9ff';
+    context.lineWidth = 0.05;
+    context.strokeRect(x + 0.025, y + 0.025, 0.95, 0.95);
+  }
+  drawCharacter(context, player, player.facing);
   for (const [y, row] of level.tiles.entries()) {
     const x = row.indexOf('B');
     if (x < 0) continue;
@@ -61,10 +71,14 @@ export function drawScene(canvas: HTMLCanvasElement, { level, player, outcome }:
     context.fillRect(x + 0.08, top, 0.84, 0.025);
   }
 
-  if (edit) drawGrid(context, edit.hover);
+  if (edit) drawGrid(context, columns, rows, edit.hover);
+  context.fillStyle = '#1a192c';
+  context.fillRect(0, 0, columns, rows * 0.009);
+  context.fillStyle = '#72639c';
+  context.fillRect(0, rows * 0.009, columns, rows * 0.003);
 }
 
-function drawCharacter(context: CanvasRenderingContext2D, { x, y }: Point, facing: -1 | 1, editing: boolean) {
+function drawCharacter(context: CanvasRenderingContext2D, { x, y }: Point, facing: -1 | 1) {
   context.fillStyle = '#f8f3f1';
   context.fillRect(x, y, 1, 1);
   context.fillStyle = '#d9cde2';
@@ -73,14 +87,9 @@ function drawCharacter(context: CanvasRenderingContext2D, { x, y }: Point, facin
   context.fillStyle = '#27233e';
   context.fillRect(eye, y + 0.30, 0.085, 0.20);
   context.fillRect(eye + 0.18, y + 0.30, 0.085, 0.20);
-  if (editing) {
-    context.strokeStyle = '#c2a9ff';
-    context.lineWidth = 0.035;
-    context.strokeRect(x + 0.018, y + 0.018, 0.964, 0.964);
-  }
 }
 
-function drawGrid(context: CanvasRenderingContext2D, hover?: Point) {
+function drawGrid(context: CanvasRenderingContext2D, columns: number, rows: number, hover?: Point) {
   context.beginPath();
   context.strokeStyle = '#beb0ff29';
   context.lineWidth = 0.015;
@@ -104,7 +113,6 @@ function drawGrid(context: CanvasRenderingContext2D, hover?: Point) {
 
 export function captureScene(snapshot: Snapshot): string {
   const canvas = document.createElement('canvas');
-  canvas.width = 910;
   canvas.height = 512;
   drawScene(canvas, snapshot);
   return canvas.toDataURL('image/png');

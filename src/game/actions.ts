@@ -52,6 +52,7 @@ export class Recorder {
   private totalSteps = 0;
 
   record(input: StepInput) {
+    if (!this.started && !input.jump && input.direction === 0) return;
     if (input.jump) this.segments.push({ key: 'jump', ticks: 0 });
     const key = input.direction === 0 ? 'sleep' : input.direction === -1 ? 'moveLeft' : 'moveRight';
     const limit = key === 'sleep' ? 1000 : 600;
@@ -59,6 +60,10 @@ export class Recorder {
     if (last?.key === key && last.ticks < limit) last.ticks++;
     else this.segments.push({ key, ticks: 1 });
     this.totalSteps++;
+  }
+
+  get started(): boolean {
+    return this.totalSteps > 0;
   }
 
   get tooLong(): boolean {

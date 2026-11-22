@@ -1,8 +1,39 @@
-import { isRecord, readLevel } from '../level/definition.ts';
+import { gridSizes, isRecord, readLevel } from '../level/definition.ts';
 import type { LevelDefinition } from '../level/definition.ts';
 
 const draftKey = 'vibe-walking:v1:draft';
 const progressKey = 'vibe-walking:v1:progress';
+const recentLevelKey = 'vibe-walking:v1:recent-level';
+const playSizeKey = 'vibe-walking:v1:play-size';
+
+export function playGridSize(): (typeof gridSizes)[number] {
+  try {
+    const rows = Number(localStorage.getItem(playSizeKey));
+    return gridSizes.find((size) => size.rows === rows) ?? gridSizes[1];
+  } catch {
+    return gridSizes[1];
+  }
+}
+
+export function savePlayGridSize(rows: number) {
+  localStorage.setItem(playSizeKey, String(rows));
+}
+
+export function recentLevel(): string | null {
+  try {
+    return localStorage.getItem(recentLevelKey);
+  } catch {
+    return null;
+  }
+}
+
+export function rememberLevel(id: string) {
+  try {
+    localStorage.setItem(recentLevelKey, id);
+  } catch {
+    // Starting a level does not depend on browser storage.
+  }
+}
 
 export function loadDraft(fallback: LevelDefinition): LevelDefinition {
   try {

@@ -3,7 +3,7 @@ import { isRecord } from '../level/definition.ts';
 import { adapters } from './protocols.ts';
 import type { ToolCall, ToolResult } from './protocols.ts';
 import { protocols } from './settings.ts';
-import type { ModelSettings } from './settings.ts';
+import type { ModelSettings, Protocol } from './settings.ts';
 import type { Outcome, StepInput } from '../game/world.ts';
 
 export const defaultPrompt = '你操控画面中有两只眼睛的浅色方块。玩家通过对话给你指引。目标是踩下红色按钮。用 ReadScreen 观察完整画面，用 ExecActionSequence 执行移动、跳跃或等待。移动距离以角色边长为一格。需要行动时先看画面，行动后按需再看画面，向玩家简短说明结果。';
@@ -11,6 +11,12 @@ export const defaultPrompt = '你操控画面中有两只眼睛的浅色方块�
 export type ChatEvent =
   | { kind: 'player' | 'assistant' | 'error'; text: string }
   | { kind: 'tool'; text: string; detail?: string; image?: string };
+
+export type Conversation = {
+  events: ChatEvent[];
+  history: Record<string, unknown>[];
+  protocol?: Protocol;
+};
 
 type GameTools = {
   readScreen: () => string;
@@ -23,29 +29,41 @@ export class Agent {
   private readonly model: ModelSettings;
   private readonly prompt: string;
   private readonly tools: GameTools;
-  private readonly emit: (event: ChatEvent) => void;
+  private readonly onEvent: (event: ChatEvent) => void;
+  private readonly conversation: Conversation;
   private readonly controller = new AbortController();
-  private readonly history: Record<string, unknown>[] = [];
   busy = false;
 
-  constructor(model: ModelSettings, prompt: string, tools: GameTools, emit: (event: ChatEvent) => void) {
+  constructor(model: ModelSettings, prompt: string, tools: GameTools, emit: (event: ChatEvent) => void,
+    conversation: Conversation = { events: [], history: [] }) {
     this.model = model;
     this.prompt = prompt;
     this.tools = tools;
-    this.emit = emit;
+    this.onEvent = emit;
+    this.conversation = conversation;
   }
 
   dispose() {
     this.controller.abort();
   }
 
-  async send(text: string) {
+  async send(text: string, prompt = this.prompt) {
     const signal = this.controller.signal;
     if (this.busy || signal.aborted) return;
     this.busy = true;
     const protocol = this.model.api;
     const adapter = adapters[protocol];
-    this.history.push({ role: 'user', content: text });
+    const conversation = this.conversation;
+    if (conversation.protocol && conversation.protocol !== protocol) {
+      conversation.history = conversation.events.flatMap((event) => {
+        if (event.kind === 'player') return [{ role: 'user', content: event.text }];
+        if (event.kind === 'assistant') return [{ role: 'assistant', content: event.text }];
+        return [];
+      });
+    }
+    conversation.protocol = protocol;
+    const { history } = conversation;
+    history.push({ role: 'user', content: text });
     this.emit({ kind: 'player', text });
 
     try {
@@ -53,7 +71,7 @@ export class Agent {
         await this.tools.whenActive(signal);
         signal.throwIfAborted();
         const toolsEnabled = request < 7;
-        const body = adapter.request(this.model.model, this.prompt, this.history, toolsEnabled);
+        const body = adapter.request(this.model.model, prompt, history, toolsEnabled);
         const result = await fetch(protocols[protocol].path, {
           method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body), signal: AbortSignal.any([signal, AbortSignal.timeout(65000)]),
@@ -64,7 +82,7 @@ export class Agent {
         signal.throwIfAborted();
         const reply = adapter.read(payload);
         if (!reply.call) {
-          this.history.push(...reply.history);
+          history.push(...reply.history);
           if (reply.text) this.emit({ kind: 'assistant', text: reply.text });
           return;
         }
@@ -72,7 +90,7 @@ export class Agent {
         if (reply.text) this.emit({ kind: 'assistant', text: reply.text });
         const toolResult = await this.runTool(reply.call, signal);
         signal.throwIfAborted();
-        this.history.push(...reply.history, ...adapter.result(reply.call, toolResult));
+        history.push(...reply.history, ...adapter.result(reply.call, toolResult));
       }
     } catch (error) {
       if (signal.aborted) return;
@@ -81,6 +99,11 @@ export class Agent {
     } finally {
       this.busy = false;
     }
+  }
+
+  private emit(event: ChatEvent) {
+    this.conversation.events.push(event);
+    this.onEvent(event);
   }
 
   private async runTool(call: ToolCall, signal: AbortSignal): Promise<ToolResult> {

@@ -1,5 +1,12 @@
-export const columns = 16;
-export const rows = 9;
+export const gridSizes = [
+  { rows: 10, columns: 15, label: '小' },
+  { rows: 20, columns: 30, label: '中' },
+  { rows: 32, columns: 48, label: '大' },
+] as const;
+
+export function gridSize(tiles: string[]) {
+  return { rows: tiles.length, columns: tiles[0].length };
+}
 
 export type Tile = '.' | '#' | 'B';
 export type Point = { x: number; y: number };
@@ -37,8 +44,11 @@ export function readLevel(value: unknown): LevelDefinition {
   const name = typeof value.name === 'string' ? value.name.trim() : '';
   if (!name || name.length > 80) throw new Error('关卡名必须为 1 到 80 个字符');
 
-  if (!Array.isArray(value.tiles) || value.tiles.length !== rows) {
-    throw new Error(`地图必须包含 ${rows} 行`);
+  if (!Array.isArray(value.tiles) || typeof value.tiles[0] !== 'string') throw new Error('地图必须包含网格行');
+  const { rows, columns } = gridSize(value.tiles);
+  const legacy = rows === 9 && columns === 16;
+  if (!legacy && !gridSizes.some((size) => size.rows === rows && size.columns === columns)) {
+    throw new Error('地图尺寸须为 10 × 15、20 × 30 或 32 × 48');
   }
   const tiles = value.tiles.map((row: unknown, index): string => {
     if (typeof row !== 'string' || row.length !== columns || /[^.#B]/.test(row)) {
@@ -87,4 +97,43 @@ export function playableError(level: LevelDefinition): string | undefined {
     const edge = level.gravity < 0 ? '上方' : '下方';
     return `按钮 (${x}, ${y}) 的${edge}需要相邻的实心块`;
   }
+}
+
+export function resizeLevel(level: LevelDefinition, rows: number, columns: number): LevelDefinition {
+  const offset = level.gravity < 0 ? 0 : rows - level.tiles.length;
+  const tiles = Array.from({ length: rows }, (_, y) =>
+    (level.tiles[y - offset] ?? '').slice(0, columns).replace('B', '.').padEnd(columns, '.'));
+  function fit(point: Point): Point {
+    return { x: Math.min(columns - 1, point.x), y: Math.max(0, Math.min(rows - 1, point.y + offset)) };
+  }
+  function nearest(origin: Point, allowed: (point: Point) => boolean): Point | undefined {
+    let best: Point | undefined;
+    let distance = Infinity;
+    for (let y = 0; y < rows; y++) {
+      for (let x = 0; x < columns; x++) {
+        const steps = Math.abs(x - origin.x) + Math.abs(y - origin.y);
+        if (steps < distance && tiles[y][x] === '.' && allowed({ x, y })) {
+          distance = steps;
+          best = { x, y };
+        }
+      }
+    }
+    return best;
+  }
+  function put({ x, y }: Point, tile: Tile) {
+    tiles[y] = tiles[y].slice(0, x) + tile + tiles[y].slice(x + 1);
+  }
+  const origin = fit(level.spawn);
+  const spawn = nearest(origin, () => true) ?? origin;
+  put(spawn, '.');
+  const oldButton = findButton(level);
+  if (oldButton) {
+    const target = fit(oldButton);
+    const outsideSpawn = ({ x, y }: Point) => x !== spawn.x || y !== spawn.y;
+    const button = tiles[target.y][target.x] === '.' && outsideSpawn(target) ? target
+      : nearest(target, ({ x, y }) => outsideSpawn({ x, y }) && tiles[y + gravityDirection(level.gravity)]?.[x] === '#')
+        ?? nearest(target, outsideSpawn);
+    if (button) put(button, 'B');
+  }
+  return { ...level, tiles, spawn };
 }

@@ -1,44 +1,29 @@
-import { columns, findButton, playableError, readLevel, rows } from '../level/definition.ts';
+import { findButton, gridSize, gridSizes, playableError, readLevel, resizeLevel } from '../level/definition.ts';
 import type { LevelDefinition, Point, Tile } from '../level/definition.ts';
 import { exportLevel, importLevel, maxLevelBytes } from '../level/yaml.ts';
 import { drawScene } from '../render/scene.ts';
 import { element } from '../ui/elements.ts';
+import { mountRun } from '../ui/run.ts';
 
 type Brush = 'solid' | 'button' | 'erase' | 'spawn';
 type Stroke = { pointer: number; previous?: Point; original: LevelDefinition; brush: Brush };
-type EditorOptions = {
-  initial: LevelDefinition;
+type EditorOptions = Pick<Parameters<typeof mountRun>[1], 'model' | 'conversation' | 'openSettings'> & {
+  level: LevelDefinition;
   save: (level: LevelDefinition) => void;
-  preview: (kind: 'manual' | 'agent', level: LevelDefinition) => void;
 };
 
-export function mountEditor(root: HTMLElement, options: EditorOptions): () => void {
+export function mountEditor(root: HTMLElement, options: EditorOptions) {
   const controller = new AbortController();
   const { signal } = controller;
   root.innerHTML = `
-    <div class="workspace-bar">
-      <div class="workspace-title"><h1>关卡创作</h1></div>
-      <div class="toolbar">
-        <input data-import-file type="file" accept=".yaml,.yml" hidden>
-        <button type="button" data-import>导入 YAML</button>
-        <button type="button" data-export>导出 YAML</button>
-        <button type="button" data-manual>手动试玩</button>
-        <button type="button" class="primary" data-agent>Agent 试玩</button>
-      </div>
-    </div>
     <div class="editor-layout">
-      <aside class="panel editor-details">
-        <h2>关卡设置</h2>
+      <div class="editor-play" data-editor-play></div>
+      <aside class="panel editor-tools" aria-label="关卡编辑">
+        <h2>关卡创作</h2>
         <label>关卡名<input data-level-name maxlength="80" required></label>
-        <label class="prompt-field">Agent 系统提示词<textarea data-prompt maxlength="4096" placeholder="留空使用默认提示词"></textarea></label>
-      </aside>
-      <section class="panel stage-panel" aria-label="关卡地图">
-        <div class="stage"><canvas width="960" height="540" aria-label="关卡地图编辑网格"></canvas></div>
-        <div class="stage-footer"><span>点击或拖动画地图 · 拖动角色设置出生点</span><span class="muted" data-coordinate></span></div>
+        <label>地图尺寸（行 × 列）<select data-grid-size></select></label>
         <p class="editor-status" data-status role="status" hidden></p>
-      </section>
-      <aside class="panel editor-tools">
-        <h2>地图工具</h2>
+        <div class="editor-tool-title"><h2>画笔</h2><span class="subtle" data-coordinate></span></div>
         <div class="brushes" role="group" aria-label="地图画笔">
           <button type="button" data-brush="solid" aria-pressed="true"><i class="swatch solid"></i>实心块</button>
           <button type="button" data-brush="button" aria-pressed="false"><i class="swatch target"></i>红色按钮</button>
@@ -50,40 +35,62 @@ export function mountEditor(root: HTMLElement, options: EditorOptions): () => vo
           <label>重力<input data-gravity type="number" min="-10" max="10" step="any" required></label>
           <label>惯性<input data-inertia type="number" min="0" max="10" step="any" required></label>
         </div>
+        <details class="prompt-field">
+          <summary>Agent 系统提示词</summary>
+          <textarea aria-label="Agent 系统提示词" data-prompt maxlength="4096" placeholder="留空使用默认提示词"></textarea>
+        </details>
+        <div class="editor-actions">
+          <input data-import-file type="file" accept=".yaml,.yml" hidden>
+          <button type="button" data-import>导入 YAML</button>
+          <button type="button" data-export>导出 YAML</button>
+        </div>
       </aside>
     </div>`;
 
-  const canvas = element<HTMLCanvasElement>(root, 'canvas');
   const coordinate = element(root, '[data-coordinate]');
   const status = element(root, '[data-status]');
   const name = element<HTMLInputElement>(root, '[data-level-name]');
+  const size = element<HTMLSelectElement>(root, '[data-grid-size]');
   const prompt = element<HTMLTextAreaElement>(root, '[data-prompt]');
   const gravity = element<HTMLInputElement>(root, '[data-gravity]');
   const inertia = element<HTMLInputElement>(root, '[data-inertia]');
   const file = element<HTMLInputElement>(root, '[data-import-file]');
   const exportButton = element<HTMLButtonElement>(root, '[data-export]');
-  const manualButton = element<HTMLButtonElement>(root, '[data-manual]');
-  const agentButton = element<HTMLButtonElement>(root, '[data-agent]');
   const brushes = root.querySelectorAll<HTMLButtonElement>('[data-brush]');
 
-  let draft = options.initial;
+  let draft = options.level;
   let brush: Brush = 'solid';
   let hover: Point | undefined;
   let stroke: Stroke | undefined;
   let fieldError = '';
   let notice = '';
 
+  const view = mountRun(element(root, '[data-editor-play]'), {
+    ...options,
+    editor: {
+      draw(canvas, snapshot) {
+        drawScene(canvas, {
+          ...snapshot, level: draft, outcome: stroke ? 'active' : snapshot.outcome,
+        }, { hover, spawn: draft.spawn });
+      },
+    },
+  });
+  const { canvas } = view;
+  canvas.setAttribute('aria-label', '游戏画面和地图编辑网格');
+
   function refresh() {
+    const { rows, columns } = gridSize(draft.tiles);
     const problem = fieldError || playableError(draft);
-    exportButton.disabled = manualButton.disabled = agentButton.disabled = Boolean(problem);
+    exportButton.disabled = Boolean(problem);
     status.textContent = [problem, notice].filter(Boolean).join(' · ');
     status.hidden = !status.textContent;
     status.classList.toggle('invalid', Boolean(problem));
-    coordinate.textContent = hover ? `(${hover.x}, ${hover.y})` : `${columns} × ${rows}`;
-    drawScene(canvas, { level: draft, player: { ...draft.spawn, facing: 1 }, outcome: 'active' }, { hover });
+    coordinate.textContent = hover ? `(${hover.x}, ${hover.y})` : `${rows} × ${columns}`;
+    view.redraw();
   }
 
   function persist() {
+    view.updateLevel(draft);
     try {
       options.save(draft);
     } catch {
@@ -96,7 +103,15 @@ export function mountEditor(root: HTMLElement, options: EditorOptions): () => vo
     prompt.value = draft.systemPrompt ?? '';
     gravity.value = String(draft.gravity);
     inertia.value = String(draft.inertia);
+    loadSizes();
     fieldError = '';
+  }
+
+  function loadSizes() {
+    const current = gridSize(draft.tiles);
+    const sizes = gridSizes.some(({ rows }) => rows === current.rows) ? gridSizes : [{ ...current, label: '旧版' }, ...gridSizes];
+    size.replaceChildren(...sizes.map(({ rows, columns, label }) => new Option(`${label} · ${rows} × ${columns}`, String(rows))));
+    size.value = String(current.rows);
   }
 
   function editFields() {
@@ -112,6 +127,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions): () => vo
   }
 
   function pointAt(event: PointerEvent): Point | undefined {
+    const { rows, columns } = gridSize(draft.tiles);
     const rect = canvas.getBoundingClientRect();
     const x = Math.floor((event.clientX - rect.left) * columns / rect.width);
     const y = Math.floor((event.clientY - rect.top) * rows / rect.height);
@@ -161,6 +177,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions): () => vo
     if (event.button !== 0 || stroke) return;
     const point = pointAt(event);
     if (!point) return;
+    canvas.focus({ preventScroll: true });
     const onSpawn = point.x === draft.spawn.x && point.y === draft.spawn.y;
     const tool = onSpawn ? 'spawn' : brush;
     notice = '';
@@ -187,6 +204,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions): () => vo
   canvas.addEventListener('pointerleave', () => { hover = undefined; refresh(); }, { signal });
   canvas.addEventListener('pointerup', (event) => finishStroke(event, false), { signal });
   canvas.addEventListener('pointercancel', (event) => finishStroke(event, true), { signal });
+  canvas.addEventListener('lostpointercapture', (event) => finishStroke(event, true), { signal });
 
   for (const item of brushes) {
     item.addEventListener('click', () => {
@@ -195,6 +213,25 @@ export function mountEditor(root: HTMLElement, options: EditorOptions): () => vo
     }, { signal });
   }
   for (const input of [name, prompt, gravity, inertia]) input.addEventListener('input', editFields, { signal });
+  size.addEventListener('change', () => {
+    const next = gridSizes.find(({ rows }) => String(rows) === size.value);
+    if (!next) return;
+    const current = gridSize(draft.tiles);
+    const cut = draft.tiles.some((row, y) => {
+      const moved = y + (draft.gravity < 0 ? 0 : next.rows - current.rows);
+      return /[#B]/.test(moved < 0 || moved >= next.rows ? row : row.slice(next.columns));
+    });
+    if (cut && !window.confirm('缩小地图会裁掉部分方块。应用此尺寸？')) {
+      size.value = String(current.rows);
+      return;
+    }
+    draft = resizeLevel(draft, next.rows, next.columns);
+    hover = undefined;
+    notice = '';
+    loadSizes();
+    persist();
+    refresh();
+  }, { signal });
   element(root, '[data-import]').addEventListener('click', () => file.click(), { signal });
   file.addEventListener('change', async () => {
     const chosen = file.files?.[0];
@@ -221,12 +258,15 @@ export function mountEditor(root: HTMLElement, options: EditorOptions): () => vo
     link.click();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }, { signal });
-  manualButton.addEventListener('click', () => options.preview('manual', readLevel(draft)), { signal });
-  agentButton.addEventListener('click', () => options.preview('agent', readLevel(draft)), { signal });
-
   loadFields();
   refresh();
-  return () => controller.abort();
+  return {
+    ...view,
+    dispose() {
+      controller.abort();
+      view.dispose();
+    },
+  };
 }
 
 function setTile(row: string, x: number, cell: Tile): string {

@@ -1,4 +1,4 @@
-import { columns, findButton, gravityDirection, rows } from '../level/definition.ts';
+import { findButton, gravityDirection, gridSize } from '../level/definition.ts';
 import type { LevelDefinition, Point } from '../level/definition.ts';
 
 export type Direction = -1 | 0 | 1;
@@ -23,6 +23,7 @@ export class World {
   readonly level: LevelDefinition;
   private readonly solids: Point[];
   private readonly button?: Point;
+  private readonly size: ReturnType<typeof gridSize>;
   private player: Player;
   private velocityY = 0;
   private canJump = true;
@@ -34,6 +35,7 @@ export class World {
   constructor(level: LevelDefinition) {
     this.level = level;
     this.button = findButton(level);
+    this.size = gridSize(level.tiles);
     this.player = { ...level.spawn, facing: 1 };
     this.solids = level.tiles.flatMap((row, y) => Array.from(row).flatMap((tile, x) => tile === '#' ? [{ x, y }] : []));
   }
@@ -52,20 +54,21 @@ export class World {
     this.moveHorizontally(input);
     this.velocityY = Math.max(-20, Math.min(20, this.velocityY + (16 * this.level.gravity * stepSeconds)));
     const dy = this.velocityY * stepSeconds;
-    const y = this.sweep(this.player.y, this.player.x, dy, 'y');
+    const y = Math.max(0, this.sweep(this.player.y, this.player.x, dy, 'y'));
     if (Math.abs(y - (this.player.y + dy)) > epsilon) this.velocityY = 0;
     this.player.y = y;
 
-    const support = this.solids.some((solid) =>
+    const support = (gravity < 0 && y === 0) || this.solids.some((solid) =>
       overlaps(this.player.x, solid.x) && Math.abs(y - (solid.y - gravity)) < epsilon);
     if (support && this.velocityY * gravity >= 0) {
       this.canJump = true;
       this.velocityY = 0;
-      if (this.button && Math.abs(y - this.button.y) < epsilon && overlaps(this.player.x, this.button.x)) {
+      if (this.button && Math.abs(y - this.button.y) < epsilon && overlaps(this.player.x, this.button.x) &&
+          this.level.tiles[this.button.y + gravity]?.[this.button.x] === '#') {
         this.outcome = 'won';
       }
     }
-    if (y >= rows || y <= -1) this.outcome = 'lost';
+    if (y >= this.size.rows) this.outcome = 'lost';
     return this.outcome;
   }
 
@@ -85,7 +88,7 @@ export class World {
     this.previousDirection = input.direction;
 
     const start = this.player.x;
-    const end = Math.max(0, Math.min(columns - 1, this.sweep(start, this.player.y, dx, 'x')));
+    const end = Math.max(0, Math.min(this.size.columns - 1, this.sweep(start, this.player.y, dx, 'x')));
     if (Math.abs(end - start) > epsilon) this.player.facing = end < start ? -1 : 1;
     if (input.direction === 0 && Math.abs(end - (start + dx)) > epsilon) this.slideRemaining = 0;
     this.player.x = end;

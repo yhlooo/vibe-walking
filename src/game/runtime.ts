@@ -16,8 +16,9 @@ type Sequence = {
 };
 
 export class Runtime {
-  readonly world: World;
-  readonly recorder?: Recorder;
+  world: World;
+  recorder?: Recorder;
+  private manual: boolean;
   private readonly listeners = new AbortController();
   private readonly events = new EventTarget();
   private readonly pressed = new Set<string>();
@@ -30,14 +31,13 @@ export class Runtime {
 
   constructor(level: LevelDefinition, manual: boolean, draw: (snapshot: Snapshot) => void, ended: (outcome: Outcome) => void) {
     this.world = new World(level);
+    this.manual = manual;
+    if (manual) this.recorder = new Recorder();
     const signal = this.listeners.signal;
     document.addEventListener('visibilitychange', () => this.updateClock(), { signal });
-    if (manual) {
-      this.recorder = new Recorder();
-      window.addEventListener('keydown', (event) => this.keyDown(event), { signal });
-      window.addEventListener('keyup', (event) => this.pressed.delete(event.code), { signal });
-      window.addEventListener('blur', () => this.clearKeys(), { signal });
-    }
+    window.addEventListener('keydown', (event) => this.keyDown(event), { signal });
+    window.addEventListener('keyup', (event) => this.pressed.delete(event.code), { signal });
+    window.addEventListener('blur', () => this.clearKeys(), { signal });
 
     const tick = (now: number) => {
       if (!this.frozen && this.world.outcome === 'active') {
@@ -66,6 +66,20 @@ export class Runtime {
     this.updateClock();
   }
 
+  reset(level: LevelDefinition, manual = this.manual) {
+    this.cancelSequence();
+    this.world = new World(level);
+    this.manual = manual;
+    this.recorder = manual ? new Recorder() : undefined;
+    this.accumulator = 0;
+    this.updateClock();
+  }
+
+  releaseManualControl() {
+    this.manual = false;
+    this.clearKeys();
+  }
+
   async whenActive(signal: AbortSignal): Promise<void> {
     signal.throwIfAborted();
     while (this.frozen) {
@@ -86,7 +100,7 @@ export class Runtime {
   }
 
   execute(steps: StepInput[]): Promise<void> {
-    if (this.sequence || this.world.outcome !== 'active') {
+    if (this.manual || this.sequence || !steps.length || this.world.outcome !== 'active') {
       return Promise.reject(new Error('当前无法执行动作'));
     }
     return new Promise((resolve, reject) => { this.sequence = { steps, index: 0, resolve, reject }; });
@@ -119,7 +133,7 @@ export class Runtime {
   }
 
   private keyDown(event: KeyboardEvent) {
-    if (!controlKeys.has(event.code) || this.frozen || this.world.outcome !== 'active' ||
+    if (!this.manual || !controlKeys.has(event.code) || this.frozen || this.world.outcome !== 'active' ||
         event.altKey || event.ctrlKey || event.metaKey ||
         (event.target instanceof Element && event.target.closest('input, textarea, select, button, a, [contenteditable]'))) return;
     event.preventDefault();
@@ -131,13 +145,14 @@ export class Runtime {
   private step(): Outcome {
     const current = this.sequence;
     let input = idleInput;
-    if (this.recorder) {
+    if (this.manual && this.recorder) {
       const left = leftKeys.some((key) => this.pressed.has(key));
       const right = rightKeys.some((key) => this.pressed.has(key));
       const direction: Direction = left === right ? 0 : left ? -1 : 1;
       input = { direction, jump: this.jump, distance: direction === 0 ? 0 : movePerStep };
       this.jump = false;
       this.recorder.record(input);
+      if (!this.recorder.started) return this.world.outcome;
     } else if (current) {
       input = current.steps[current.index++];
     }

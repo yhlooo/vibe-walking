@@ -8,7 +8,7 @@ import { readLevel } from '../src/level/definition.ts';
 
 const firstLevel = readLevel(JSON.parse(readFileSync(new URL('../levels/definitions/0001-walk-to-button.json', import.meta.url))));
 const png = 'data:image/png;base64,cG5n';
-const actions = { actions: [{ key: 'moveRight', value: 10 }] };
+const actions = { actions: [{ key: 'moveRight', value: 21 }] };
 
 function fixture(protocol, index) {
   const name = index === 1 ? 'ExecActionSequence' : 'ReadScreen';
