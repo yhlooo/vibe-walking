@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/go-logr/logr"
 
@@ -20,47 +21,54 @@ type service struct {
 	client *http.Client
 	levels *levels.Store
 
-	mu    sync.RWMutex
-	model config.ModelConfig
+	mu       sync.RWMutex
+	settings config.Config
 }
 
 type modelSummary struct {
-	API       config.ModelAPIProtocol `json:"api"`
-	BaseURL   string                  `json:"baseURL"`
-	Model     string                  `json:"model"`
-	HasAPIKey bool                    `json:"hasAPIKey"`
+	API             config.ModelAPIProtocol `json:"api"`
+	BaseURL         string                  `json:"baseURL"`
+	Model           string                  `json:"model"`
+	HasAPIKey       bool                    `json:"hasAPIKey"`
+	MaxInputToken   int64                   `json:"maxInputToken"`
+	ReasoningEffort string                  `json:"reasoningEffort"`
 }
 
 type settingsSummary struct {
-	Model *modelSummary `json:"model"`
+	Model    *modelSummary `json:"model"`
+	Username string        `json:"username,omitempty"`
 }
 
-func summarize(model config.ModelConfig) settingsSummary {
+func summarize(settings config.Config) settingsSummary {
+	model := settings.Model
 	if model.Protocol == "" {
-		return settingsSummary{}
+		return settingsSummary{Username: settings.Username}
 	}
-	return settingsSummary{Model: &modelSummary{
+	return settingsSummary{Username: settings.Username, Model: &modelSummary{
 		API: model.Protocol, BaseURL: model.BaseURL, Model: model.Model, HasAPIKey: model.APIKey != "",
+		MaxInputToken: model.MaxInputToken, ReasoningEffort: model.ReasoningEffort,
 	}}
 }
 
-func (s *service) readModel() config.ModelConfig {
+func (s *service) readSettings() config.Config {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.model
+	return s.settings
 }
 
 type modelUpdate struct {
-	API     config.ModelAPIProtocol `json:"api"`
-	BaseURL string                  `json:"baseURL"`
-	Model   string                  `json:"model"`
-	APIKey  *string                 `json:"apiKey"`
+	API             config.ModelAPIProtocol `json:"api"`
+	BaseURL         string                  `json:"baseURL"`
+	Model           string                  `json:"model"`
+	APIKey          *string                 `json:"apiKey"`
+	MaxInputToken   *int64                  `json:"maxInputToken"`
+	ReasoningEffort *string                 `json:"reasoningEffort"`
 }
 
 func (s *service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, summarize(s.readModel()))
+		writeJSON(w, http.StatusOK, summarize(s.readSettings()))
 	case http.MethodPost:
 		s.updateSettings(w, r)
 	default:
@@ -71,22 +79,48 @@ func (s *service) handleSettings(w http.ResponseWriter, r *http.Request) {
 
 func (s *service) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Model json.RawMessage `json:"model"`
+		Model    json.RawMessage `json:"model"`
+		Username *string         `json:"username"`
 	}
-	if err := decodeJSON(http.MaxBytesReader(w, r.Body, 64<<10), &body, true); err != nil || body.Model == nil {
-		writeError(w, http.StatusBadRequest, "invalid_settings", "请提交包含 model 字段的 JSON 对象")
+	if err := decodeJSON(http.MaxBytesReader(w, r.Body, 64<<10), &body, true); err != nil ||
+		(body.Model == nil && body.Username == nil) {
+		writeError(w, http.StatusBadRequest, "invalid_settings", "请提交模型或用户名设置")
+		return
+	}
+	if body.Username != nil && utf8.RuneCountInString(*body.Username) > 20 {
+		writeError(w, http.StatusBadRequest, "invalid_settings", "用户名最多 20 个字符")
 		return
 	}
 	var update *modelUpdate
-	if err := decodeJSON(bytes.NewReader(body.Model), &update, true); err != nil {
+	if body.Model != nil && decodeJSON(bytes.NewReader(body.Model), &update, true) != nil {
 		writeError(w, http.StatusBadRequest, "invalid_settings", "模型设置格式错误")
 		return
 	}
-	var model config.ModelConfig
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	next := s.settings
+	if body.Username != nil {
+		next.Username = *body.Username
+	}
+	if body.Model != nil {
+		next.Model = config.ModelConfig{}
+	}
 	if update != nil {
-		model = config.ModelConfig{Protocol: update.API, BaseURL: update.BaseURL, Model: update.Model}
+		model := config.ModelConfig{Protocol: update.API, BaseURL: update.BaseURL, Model: update.Model}
 		if update.APIKey != nil {
 			model.APIKey = *update.APIKey
+		}
+		model.MaxInputToken = s.settings.Model.MaxInputToken
+		model.ReasoningEffort = s.settings.Model.ReasoningEffort
+		if update.MaxInputToken != nil {
+			if *update.MaxInputToken <= 0 {
+				writeError(w, http.StatusBadRequest, "invalid_settings", "上下文长度必须大于 0")
+				return
+			}
+			model.MaxInputToken = *update.MaxInputToken
+		}
+		if update.ReasoningEffort != nil {
+			model.ReasoningEffort = *update.ReasoningEffort
 		}
 		var err error
 		model, err = model.Normalize()
@@ -94,22 +128,17 @@ func (s *service) updateSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_settings", err.Error())
 			return
 		}
+		if update.APIKey == nil && model.Protocol == s.settings.Model.Protocol && model.BaseURL == s.settings.Model.BaseURL {
+			model.APIKey = s.settings.Model.APIKey
+		}
+		next.Model = model
 	}
-
-	s.mu.Lock()
-	if update != nil && update.APIKey == nil && model.Protocol == s.model.Protocol && model.BaseURL == s.model.BaseURL {
-		model.APIKey = s.model.APIKey
-	}
-	err := config.SaveConfig(r.Context(), &config.Config{Model: model}, s.path)
-	if err == nil {
-		s.model = model
-	}
-	s.mu.Unlock()
-	if err != nil {
+	if err := config.SaveConfig(r.Context(), &next, s.path); err != nil {
 		writeError(w, http.StatusInternalServerError, "settings_write_failed", "无法保存模型设置")
 		return
 	}
-	writeJSON(w, http.StatusOK, summarize(model))
+	s.settings = next
+	writeJSON(w, http.StatusOK, summarize(next))
 }
 
 func decodeJSON(r io.Reader, dst any, strict bool) error {

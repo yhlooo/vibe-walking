@@ -8,9 +8,11 @@ import (
 
 // Config 配置
 type Config struct {
-	Model ModelConfig `json:"model"`
-	// TODO: 其他配置
+	Model    ModelConfig `json:"model"`
+	Username string      `json:"username,omitempty"`
 }
+
+const DefaultMaxInputToken = 1_000_000
 
 // ModelConfig 模型配置
 type ModelConfig struct {
@@ -21,7 +23,9 @@ type ModelConfig struct {
 	// API 密钥
 	APIKey string `json:"apiKey,omitempty"`
 	// 模型名
-	Model string `json:"model"`
+	Model           string `json:"model"`
+	MaxInputToken   int64  `json:"maxInputToken,omitempty"`
+	ReasoningEffort string `json:"reasoningEffort,omitempty"`
 }
 
 // ModelAPIProtocol 模型 API 协议
@@ -51,6 +55,13 @@ func (m ModelConfig) Normalize() (ModelConfig, error) {
 	if m.Model == "" {
 		return ModelConfig{}, errors.New("请输入模型 ID")
 	}
+	if m.MaxInputToken < 0 || m.MaxInputToken > 1<<53-1 {
+		return ModelConfig{}, errors.New("上下文长度超出范围")
+	}
+	if m.MaxInputToken == 0 {
+		m.MaxInputToken = DefaultMaxInputToken
+	}
+	m.ReasoningEffort = strings.TrimSpace(m.ReasoningEffort)
 	m.APIKey = strings.TrimSpace(m.APIKey)
 	if strings.ContainsAny(m.APIKey, "\r\n") {
 		return ModelConfig{}, errors.New("API Key 必须在同一行")

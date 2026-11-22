@@ -8,7 +8,7 @@ import { mountRun } from '../ui/run.ts';
 
 type Brush = 'solid' | 'button' | 'erase' | 'spawn';
 type Stroke = { pointer: number; previous?: Point; original: LevelDefinition; brush: Brush };
-type EditorOptions = Pick<Parameters<typeof mountRun>[1], 'model' | 'conversation' | 'openSettings'> & {
+type EditorOptions = Pick<Parameters<typeof mountRun>[1], 'model' | 'username' | 'conversation' | 'openSettings'> & {
   level: LevelDefinition;
   save: (level: LevelDefinition) => Promise<void>;
 };

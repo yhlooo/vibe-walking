@@ -1,13 +1,16 @@
 import { isRecord } from '../level/definition.ts';
-import type { Protocol } from './settings.ts';
+import type { ModelSettings, Protocol } from './settings.ts';
 
 type Item = Record<string, unknown>;
 export type ToolCall = { id: string; name: string; args: unknown; serialized: boolean };
 export type ToolResult = { text: string; image?: string; error?: boolean };
-type Reply = { history: Item[]; text: string; call?: ToolCall };
+export type Reply = { history: Item[]; text: string; call?: ToolCall; inputTokens?: number };
+export type OutputKind = 'assistant' | 'thinking';
+type EmitDelta = (kind: OutputKind, text: string) => void;
+type Accumulator = { push(event: Item): boolean | void; finish(): Reply };
 
 type Adapter = {
-  request(model: string, prompt: string, history: Item[], toolsEnabled: boolean): Item;
+  request(settings: ModelSettings, prompt: string, history: Item[], tools: 'auto' | 'none' | 'omit'): Item;
   read(value: unknown): Reply;
   result(call: ToolCall, value: ToolResult): Item[];
 };
@@ -64,11 +67,15 @@ function textBlocks(value: unknown, type: string): string {
 }
 
 const chatCompletions: Adapter = {
-  request(model, prompt, history, toolsEnabled) {
+  request(settings, prompt, history, tools) {
     return {
-      model, messages: [{ role: 'developer', content: prompt }, ...history], stream: false,
-      tools: openAIFunctions.map((definition) => ({ type: 'function', function: definition })),
-      parallel_tool_calls: false, tool_choice: toolsEnabled ? 'auto' : 'none',
+      model: settings.model, messages: [{ role: 'developer', content: prompt }, ...history], stream: true,
+      stream_options: { include_usage: true },
+      ...(effort(settings) ? { reasoning_effort: effort(settings) } : {}),
+      ...(tools !== 'omit' ? {
+        tools: openAIFunctions.map((definition) => ({ type: 'function', function: definition })),
+        parallel_tool_calls: false, tool_choice: tools,
+      } : {}),
     };
   },
   read(value) {
@@ -85,6 +92,7 @@ const chatCompletions: Adapter = {
     const history = [{
       role: 'assistant', content: message.content ?? (call ? null : text),
       ...(call ? { tool_calls: calls } : {}),
+      ...(message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),
     }];
     return { history, text, call: call && invocation ? tool(call.id, invocation.name, invocation.arguments, true) : undefined };
   },
@@ -101,12 +109,17 @@ const chatCompletions: Adapter = {
 };
 
 const responses: Adapter = {
-  request(model, instructions, input, toolsEnabled) {
+  request(settings, instructions, input, tools) {
+    const level = effort(settings);
+    const summary = level !== 'none' && (level || /^(?:o[1-9](?:-|$)|gpt-[5-9](?:[.-]|$))/.test(settings.model));
     return {
-      model, instructions, input, store: false, stream: false, parallel_tool_calls: false,
+      model: settings.model, instructions, input, store: false, stream: true,
       include: ['reasoning.encrypted_content'],
-      tools: openAIFunctions.map((definition) => ({ type: 'function', ...definition })),
-      tool_choice: toolsEnabled ? 'auto' : 'none',
+      ...(summary || level ? { reasoning: { ...(summary ? { summary: 'auto' } : {}), ...(level ? { effort: level } : {}) } } : {}),
+      ...(tools !== 'omit' ? {
+        parallel_tool_calls: false, tools: openAIFunctions.map((definition) => ({ type: 'function', ...definition })),
+        tool_choice: tools,
+      } : {}),
     };
   },
   read(value) {
@@ -133,11 +146,19 @@ const responses: Adapter = {
 };
 
 const anthropicMessages: Adapter = {
-  request(model, system, messages, toolsEnabled) {
+  request(settings, system, messages, tools) {
+    const level = effort(settings);
+    const officialEndpoint = /^https:\/\/api\.anthropic\.com(?:\/|$)/i.test(settings.baseURL);
+    const adaptive = (level && !officialEndpoint) ||
+      /^(?:claude-(?:opus|sonnet)-4-[6-9]|claude-(?:opus|sonnet|haiku)-[5-9])(?:-|$)/.test(settings.model);
     return {
-      model, system, messages, max_tokens: 4096, stream: false,
-      tools: functions.map(({ name, description, parameters }) => ({ name, description, input_schema: parameters })),
-      tool_choice: toolsEnabled ? { type: 'auto', disable_parallel_tool_use: true } : { type: 'none' },
+      model: settings.model, system, messages, max_tokens: adaptive ? 16384 : 4096, stream: true,
+      ...(adaptive ? { thinking: { type: 'adaptive', display: 'summarized' } } : {}),
+      ...(level ? { output_config: { effort: level } } : {}),
+      ...(tools !== 'omit' ? {
+        tools: functions.map(({ name, description, parameters }) => ({ name, description, input_schema: parameters })),
+        tool_choice: tools === 'auto' ? { type: 'auto', disable_parallel_tool_use: true } : { type: 'none' },
+      } : {}),
     };
   },
   read(value) {
@@ -170,3 +191,162 @@ export const adapters: Record<Protocol, Adapter> = {
   OpenAIResponses: responses,
   AnthropicMessages: anthropicMessages,
 };
+
+function effort(settings: ModelSettings) {
+  if (settings.reasoningEffort === 'ultra' &&
+      /^https:\/\/api\.(?:openai|anthropic)\.com(?:\/|$)/i.test(settings.baseURL)) return 'max';
+  return settings.reasoningEffort;
+}
+
+function string(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function tokens(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function chatStream(emit: EmitDelta): Accumulator {
+  const calls = new Map<number, { id: string; type: string; function: { name: string; arguments: string } }>();
+  let finishReason: unknown;
+  let content = '';
+  let refusal = '';
+  let reasoning = '';
+  let inputTokens: number | undefined;
+  return {
+    push(event) {
+      if (isRecord(event.usage)) inputTokens = tokens(event.usage.prompt_tokens) ?? inputTokens;
+      const choice = items(event.choices)[0];
+      if (!choice) return;
+      if (choice.finish_reason != null) finishReason = choice.finish_reason;
+      if (!isRecord(choice.delta)) return;
+      const delta = choice.delta;
+      const thought = string(delta.reasoning_content) || string(delta.reasoning);
+      const text = string(delta.content);
+      const denied = string(delta.refusal);
+      reasoning += string(delta.reasoning_content);
+      content += text;
+      refusal += denied;
+      if (thought) emit('thinking', thought);
+      if (text || denied) emit('assistant', text + denied);
+      if (!Array.isArray(delta.tool_calls)) return;
+      for (const part of items(delta.tool_calls)) {
+        if (typeof part.index !== 'number') throw new Error('Chat Completions 的工具调用缺少序号');
+        const current = calls.get(part.index) ?? { id: '', type: 'function', function: { name: '', arguments: '' } };
+        current.id += string(part.id);
+        if (isRecord(part.function)) {
+          current.function.name += string(part.function.name);
+          current.function.arguments += string(part.function.arguments);
+        }
+        calls.set(part.index, current);
+      }
+    },
+    finish() {
+      const message = {
+        content: content || null, refusal, reasoning_content: reasoning, tool_calls: [...calls.values()],
+      };
+      return { ...chatCompletions.read({ choices: [{ message, finish_reason: finishReason }] }), inputTokens };
+    },
+  };
+}
+
+function responsesStream(emit: EmitDelta): Accumulator {
+  let response: Item | undefined;
+  return {
+    push(event) {
+      if (event.type === 'response.output_text.delta' || event.type === 'response.refusal.delta') {
+        emit('assistant', string(event.delta));
+      } else if (event.type === 'response.reasoning_summary_text.delta' || event.type === 'response.reasoning_text.delta') {
+        emit('thinking', string(event.delta));
+      } else if (event.type === 'response.completed') {
+        response = object(event.response);
+        return true;
+      } else if (event.type === 'response.failed' || event.type === 'response.incomplete') {
+        throw new Error('Responses 的响应未完成');
+      }
+    },
+    finish() {
+      const reply = responses.read(response);
+      const usage = response?.usage;
+      return { ...reply, inputTokens: isRecord(usage) ? tokens(usage.input_tokens) : undefined };
+    },
+  };
+}
+
+function anthropicStream(emit: EmitDelta): Accumulator {
+  const blocks = new Map<number, Item>();
+  const openBlocks = new Set<number>();
+  const partialInput = new Map<number, string>();
+  const inputFields = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
+  const reported = new Map<string, number>();
+  let stopReason: unknown;
+  let stopped = false;
+  return {
+    push(event) {
+      const usage = (isRecord(event.message) ? event.message : event).usage;
+      if (isRecord(usage)) {
+        for (const field of inputFields) {
+          const count = usage[field];
+          if (typeof count === 'number') reported.set(field, count);
+        }
+      }
+      if (event.type === 'message_delta') {
+        stopReason = object(event.delta).stop_reason;
+      } else if (event.type === 'message_stop') {
+        stopped = true;
+        return true;
+      }
+      if (typeof event.index !== 'number') return;
+      const index = event.index;
+      if (event.type === 'content_block_start') {
+        const block = { ...object(event.content_block) };
+        blocks.set(index, block);
+        openBlocks.add(index);
+        if (block.type === 'text') emit('assistant', string(block.text));
+        if (block.type === 'thinking') emit('thinking', string(block.thinking));
+        return;
+      }
+      const block = blocks.get(index);
+      if (!block) return;
+      if (event.type === 'content_block_delta') {
+        const delta = object(event.delta);
+        if (delta.type === 'text_delta' || delta.type === 'thinking_delta') {
+          const field = delta.type === 'text_delta' ? 'text' : 'thinking';
+          const text = string(delta[field]);
+          block[field] = string(block[field]) + text;
+          emit(field === 'text' ? 'assistant' : 'thinking', text);
+        } else if (delta.type === 'signature_delta') {
+          block.signature = string(block.signature) + string(delta.signature);
+        } else if (delta.type === 'input_json_delta') {
+          partialInput.set(index, (partialInput.get(index) ?? '') + string(delta.partial_json));
+        }
+      } else if (event.type === 'content_block_stop') {
+        const json = partialInput.get(index);
+        if (json) block.input = JSON.parse(json);
+        partialInput.delete(index);
+        openBlocks.delete(index);
+      }
+    },
+    finish() {
+      if (!stopped || openBlocks.size) throw new Error('Anthropic Messages 的响应未完成');
+      const content = [...blocks.entries()].sort(([a], [b]) => a - b).map(([, block]) => block);
+      const inputTokens = tokens([...reported.values()].reduce((sum, count) => sum + count, 0));
+      return { ...anthropicMessages.read({ content, stop_reason: stopReason }), inputTokens };
+    },
+  };
+}
+
+export function streamReply(protocol: Protocol, emit: EmitDelta): Accumulator {
+  switch (protocol) {
+    case 'OpenAIChatCompletions': return chatStream(emit);
+    case 'OpenAIResponses': return responsesStream(emit);
+    case 'AnthropicMessages': return anthropicStream(emit);
+  }
+}
+
+export function acceptStreamEvent(stream: Accumulator, data: string): boolean | void {
+  if (data === '[DONE]') return true;
+  const event = object(JSON.parse(data));
+  if (event.type === 'error' || event.error) throw new Error('上游模型报告生成失败');
+  return stream.push(event);
+}

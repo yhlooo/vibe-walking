@@ -113,11 +113,12 @@ h2 { font-size: 15px; font-weight: 730; }
 .success { color: var(--success); font-weight: 700; }
 .invalid { color: var(--danger); }
 
-.run-sidebar { display: flex; flex-direction: column; min-height: 0; contain: size; }
+.run-sidebar { display: flex; flex-direction: column; min-height: 240px; contain: size; }
+.run-sidebar:has(.recording-panel:not([hidden])) { min-height: 400px; }
 .sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 51px; padding: 10px 14px; }
 .sidebar-header { border-bottom: 1px solid var(--border); }
-.messages { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; overflow: auto; padding: 15px 14px; gap: 12px; }
-.messages > *, .sidebar-header, .composer, .recording-panel { flex: none; }
+.messages { display: flex; flex-direction: column; flex: 1 1 0; min-height: 56px; overflow: auto; padding: 15px 14px; gap: 12px; }
+.messages > *, .sidebar-header, .recording-panel { flex: none; }
 .chat-empty { display: grid; justify-items: start; align-content: center; min-height: 100%; gap: 9px; padding: 4px 3px; }
 .vibe-mark { display: block; }
 .chat-empty strong { font-size: 15px; }
@@ -131,9 +132,21 @@ h2 { font-size: 15px; font-weight: 730; }
 .tool-event summary { cursor: pointer; }
 .tool-event img { width: 100%; display: block; margin-top: 8px; border-radius: 3px; }
 .tool-event pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; margin-bottom: 0; }
-.composer { padding: 12px 13px; border-top: 1px solid var(--border); }
-.composer textarea { display: block; width: 100%; min-height: 63px; max-height: 145px; resize: vertical; }
-.composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; }
+.chat-divider {
+  display: grid;
+  flex: 0 0 13px;
+  place-items: center;
+  border-block: 1px solid var(--border);
+  background: var(--inset);
+  cursor: ns-resize;
+  touch-action: none;
+}
+.chat-divider::before { content: ""; width: 30px; height: 3px; border-radius: 2px; background: #736387; }
+.chat-divider:hover::before, .chat-divider:focus-visible::before { background: var(--accent); }
+.chat-divider:focus-visible { outline-offset: -2px; }
+.composer { display: flex; flex: 0 1 auto; flex-direction: column; height: 134px; min-height: 119px; padding: 9px 13px 11px; }
+.composer textarea { display: block; flex: 1 1 0; width: 100%; min-height: 52px; resize: none; }
+.composer-footer { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 12px; margin-top: 9px; }
 .composer-footer button[type="submit"] { margin-left: auto; min-width: 68px; }
 .recording-panel { border-top: 1px solid var(--border); }
 .recording { display: block; width: 100%; height: clamp(72px, 14vh, 124px); border: 0; border-radius: 0; resize: none; padding: 14px; font-family: ui-monospace, Menlo, monospace; color: #d4bfeb; font-size: 12px; }
@@ -231,6 +244,24 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .settings-form .dialog-actions { margin-top: 0; }
 .settings-status { font-size: 13px; }
 
+@media (max-width: 1280px) {
+  .home-scene { padding-inline: 0; }
+  .home-content h1 { font-size: clamp(42px, 9vw, 108px); }
+  .home-actions { width: clamp(128px, 28vw, 248px); }
+}
+@media (max-aspect-ratio: 16/9) {
+  .scene-backdrop:has(+ .workspace [data-workspace]:not([hidden]) .home-scene) {
+    inset: auto 0 0 auto;
+    width: clamp(100%, 177.78svh, 215vw);
+    height: auto;
+    aspect-ratio: 16 / 9;
+    object-position: right bottom;
+    mask-image: linear-gradient(to bottom, transparent, #000 26%);
+  }
+  .scene-backdrop:not([hidden]) + .workspace:has([data-workspace]:not([hidden]) .home-scene)::before {
+    background: linear-gradient(90deg, #13121bf0, #171424a0 31%, transparent 68%), linear-gradient(0deg, #13121b48, transparent 42%);
+  }
+}
 @media (max-width: 1080px) {
   .editor-layout { grid-template-columns: minmax(0, 1fr) minmax(174px, .36fr); }
   .editor-layout .run-layout { grid-template-columns: minmax(0, 1fr); }
@@ -279,3 +310,8 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .prompt-dialog { width: min(760px, calc(100vw - 30px)); }
 .prompt-dialog textarea { display: block; width: 100%; min-height: min(300px, 50dvh); max-height: 65dvh; resize: vertical; line-height: 1.65; }
 .settings-dialog .settings-form > h2 { display: none; }
+
+.message.thinking { color: var(--muted); }
+.message.thinking summary { cursor: pointer; font-size: 12px; }
+.message.thinking > p { margin-top: 6px; }
+.settings-form [data-username] { resize: vertical; }

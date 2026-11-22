@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"time"
 
@@ -25,7 +26,7 @@ var modelProxies = []modelProxy{
 
 func (s *service) proxy(proxy modelProxy) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		model := s.readModel()
+		model := s.readSettings().Model
 		switch {
 		case model.Protocol == "":
 			writeError(w, http.StatusNotFound, "model_not_configured", "请先配置模型连接")
@@ -51,14 +52,16 @@ func (s *service) proxy(proxy modelProxy) http.HandlerFunc {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-		defer cancel()
-		upstream, err := http.NewRequestWithContext(ctx, http.MethodPost, model.BaseURL+proxy.suffix, bytes.NewReader(payload))
+		upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, model.BaseURL+proxy.suffix, bytes.NewReader(payload))
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "upstream_unavailable", "无法请求上游模型接口")
 			return
 		}
 		upstream.Header.Set("Content-Type", "application/json")
+		var stream bool
+		if json.Unmarshal(body["stream"], &stream) == nil && stream {
+			upstream.Header.Set("Accept", "text/event-stream")
+		}
 		if proxy.protocol == config.AnthropicMessagesAPI {
 			upstream.Header.Set("anthropic-version", "2023-06-01")
 			if model.APIKey != "" {
@@ -87,7 +90,30 @@ func (s *service) proxy(proxy modelProxy) http.HandlerFunc {
 			w.Header().Set("Content-Type", contentType)
 		}
 		w.WriteHeader(response.StatusCode)
+		if mediaType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type")); mediaType == "text/event-stream" {
+			streamResponse(w, response.Body)
+			return
+		}
 		io.Copy(w, response.Body)
+	}
+}
+
+func streamResponse(w http.ResponseWriter, body io.Reader) {
+	controller := http.NewResponseController(w)
+	if controller.Flush() != nil {
+		return
+	}
+	buffer := make([]byte, 16<<10)
+	for {
+		n, err := body.Read(buffer)
+		if n > 0 {
+			if _, writeErr := w.Write(buffer[:n]); writeErr != nil || controller.Flush() != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
 	}
 }
 

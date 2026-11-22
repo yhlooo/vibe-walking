@@ -1,18 +1,42 @@
 import { compileActions } from '../game/actions.ts';
 import { isRecord } from '../level/definition.ts';
-import { adapters } from './protocols.ts';
-import type { ToolCall, ToolResult } from './protocols.ts';
-import { protocols } from './settings.ts';
+import { contextToSummarize, estimateContext } from './context.ts';
+import type { ContextUsage } from './context.ts';
+import { acceptStreamEvent, adapters, streamReply } from './protocols.ts';
+import type { OutputKind, ToolCall, ToolResult } from './protocols.ts';
+import { defaultMaxInputToken, protocols } from './settings.ts';
 import type { ModelSettings, Protocol } from './settings.ts';
+import { readEventStream } from './stream.ts';
 import type { Outcome, StepInput } from '../game/world.ts';
 
-export const defaultPrompt = `你是 Vibe，画面中有两只眼睛的白色方块。你的边长为一格。
+export const defaultPrompt = `## 你是谁
 
-- 使用 ReadScreen 查看完整画面。使用 ExecActionSequence 按顺序执行动作。
-- moveLeft 和 moveRight 的 value 是移动距离，单位为格。sleep 的 value 是等待时间，单位为秒。jump 无需 value，可和紧随其后的移动同时开始。
-- 重力持续生效，角色落回支撑面后恢复起跳机会；走出边缘时，若尚未起跳，仍可跳一次。实心方块和地图顶边阻挡移动，地图两侧限制水平移动。停止水平输入后，角色可能因惯性继续滑动。角色完全跌出地图底边即死亡。`;
+你叫 Vibe ，是一个正方形白色方块，有两个眼睛。你不爱说话，沉默寡言，但是善于思考，行动敏捷。
+
+## 你所在的世界
+
+你在一个二维世界中，你可以左右移动，或向上跳。
+
+- 使用 ReadScreen 工具可以查看你所处的环境，你是画面中那个白色正方形方块。你的边长为 1 。
+- 用 ExecActionSequence 可以按顺序执行动作。
+  每个行动序列中 key 是行动类型， value 是表示行动程度的值，对于不同行动不同：
+  - \`jump\` : 进行一次跳跃。 value 无意义。起跳后操作就结束，可执行下一个操作，无需等待落地。起跳后仍然可以左右移动。起跳后在触地前不能再次起跳，但是在空中可以起跳（比如从边缘落下过程中可以进行一次起跳）。
+  - \`moveLeft\` / \`moveRight\` : 移动指定距离。 value 1 约为 1 个你的边长。精确到 0.01 。视场景中惯性设置可能会有额外移动，移动完对应距离操作就结束，可执行下一个操作，无需等待惯性位移。立刻接与惯性等量的反向移动可以取消惯性。如果被障碍物阻挡仍会正常消耗移动量但不会移动，也不会反弹。
+  - \`sleep\` : 等待指定时长。 value 单位秒。最多精确到毫秒，即 0.001 。
+
+画面两侧和上方是硬边界无法穿过，画面底边下发是虚空，坠入会死亡。
+
+## 关于和你对话的人
+
+与你对话的人叫 {{user}} ，他将指导你在这个世界中的行动。目前来看，你或许应该信任这个人？`;
 
 export const respawnInfo = '<system-info>你刚刚跌落悬崖，现在游戏重新开始了</system-info>';
+
+const interruptionInfo = '<system-info>{{user}} 刚刚中断了你的行动，以下是 ta 的新指示</system-info>';
+
+function personalize(text: string, username: string) {
+  return text.replaceAll('{{user}}', () => username);
+}
 
 function userContent(text: string, systemInfo?: string) {
   return systemInfo ? `${systemInfo}\n${text}` : text;
@@ -20,7 +44,7 @@ function userContent(text: string, systemInfo?: string) {
 
 export type ChatEvent =
   | { kind: 'player'; text: string; systemInfo?: string }
-  | { kind: 'assistant' | 'error'; text: string }
+  | { kind: OutputKind | 'error'; text: string }
   | { kind: 'tool'; text: string; detail?: string; image?: string };
 
 export type Conversation = {
@@ -28,11 +52,14 @@ export type Conversation = {
   history: Record<string, unknown>[];
   protocol?: Protocol;
   pendingSystemInfo?: string;
+  interrupted?: boolean;
+  usage?: ContextUsage;
+  summary?: Record<string, unknown>;
 };
 
 type GameTools = {
   readScreen: () => string;
-  execute: (steps: StepInput[]) => Promise<void>;
+  execute: (steps: StepInput[], signal: AbortSignal) => Promise<void>;
   whenActive: (signal: AbortSignal) => Promise<void>;
   outcome: () => Outcome;
 };
@@ -43,25 +70,36 @@ export class Agent {
   private readonly tools: GameTools;
   private readonly onEvent: (event: ChatEvent) => void;
   private readonly conversation: Conversation;
-  private readonly controller = new AbortController();
+  private readonly username: string;
+  private turn?: AbortController;
+  private disposed = false;
   busy = false;
 
   constructor(model: ModelSettings, prompt: string, tools: GameTools, emit: (event: ChatEvent) => void,
-    conversation: Conversation = { events: [], history: [] }) {
+    conversation: Conversation = { events: [], history: [] }, username = '') {
     this.model = model;
     this.prompt = prompt;
     this.tools = tools;
     this.onEvent = emit;
     this.conversation = conversation;
+    this.username = username;
   }
 
   dispose() {
-    this.controller.abort();
+    this.disposed = true;
+    this.turn?.abort();
+  }
+
+  interrupt() {
+    if (!this.turn || this.turn.signal.aborted) return;
+    this.conversation.interrupted = true;
+    this.turn.abort();
   }
 
   async send(text: string, prompt = this.prompt) {
-    const signal = this.controller.signal;
-    if (this.busy || signal.aborted) return;
+    if (this.busy || this.disposed) return;
+    const turn = this.turn = new AbortController();
+    const { signal } = turn;
     this.busy = true;
     const protocol = this.model.api;
     const adapter = adapters[protocol];
@@ -70,57 +108,166 @@ export class Agent {
       conversation.history = conversation.events.flatMap((event) => {
         if (event.kind === 'player') return [{ role: 'user', content: userContent(event.text, event.systemInfo) }];
         if (event.kind === 'assistant') return [{ role: 'assistant', content: event.text }];
+        if (event.kind === 'thinking') return [{ role: 'assistant', content: thinkingContext(event.text) }];
         return [];
       });
+      delete conversation.usage;
     }
     conversation.protocol = protocol;
     const { history } = conversation;
-    const systemInfo = conversation.pendingSystemInfo;
+    prompt = personalize(prompt, this.username);
+    const systemInfo = [
+      conversation.pendingSystemInfo && personalize(conversation.pendingSystemInfo, this.username),
+      conversation.interrupted && personalize(interruptionInfo, this.username),
+    ].filter(Boolean).join('\n');
     delete conversation.pendingSystemInfo;
+    delete conversation.interrupted;
     const userMessage = { role: 'user', content: userContent(text, systemInfo) };
     history.push(userMessage);
     this.emit({ kind: 'player', text, ...(systemInfo ? { systemInfo } : {}) });
 
-    let uncommittedText: string | undefined;
+    let output: ChatEvent[] = [];
+    let completedTool: { history: Record<string, unknown>[]; call: ToolCall } | undefined;
+    const retainOutput = () => {
+      if (completedTool) {
+        history.push(...completedTool.history, ...adapter.result(completedTool.call, { text: '动作已中断', error: true }));
+      } else {
+        const content = output.map((event) => event.kind === 'thinking' ? thinkingContext(event.text) : event.text).join('\n');
+        if (content) history.push({ role: 'assistant', content });
+      }
+      output = [];
+      completedTool = undefined;
+    };
+    signal.addEventListener('abort', retainOutput, { once: true });
+
+    const onDelta = (kind: OutputKind, delta: string) => {
+      if (!delta) return;
+      const current = output.at(-1);
+      if (current?.kind === kind) {
+        current.text += delta;
+        this.onEvent(current);
+      } else {
+        const event = { kind, text: delta };
+        output.push(event);
+        this.emit(event);
+      }
+    };
+
+    const threshold = this.model.maxInputToken ?? defaultMaxInputToken;
+    const usageKey = JSON.stringify([protocol, this.model.baseURL, this.model.model, this.model.reasoningEffort, prompt]);
+    let compressionFailed = false;
     try {
       for (let request = 0; request < 8; request++) {
         await this.tools.whenActive(signal);
         signal.throwIfAborted();
+        let estimate = estimateContext(prompt, history);
+        const usage = conversation.usage;
+        const inputTokens = usage?.key === usageKey ? usage.tokens + estimate - usage.estimate : estimate;
+        const currentIndex = history.indexOf(userMessage);
+        const hasPriorTurns = currentIndex > 0 && !(currentIndex === 1 && history[0] === conversation.summary);
+        const hasToolHistory = currentIndex < history.length - 1;
+        if (!compressionFailed && inputTokens >= threshold && (hasPriorTurns || hasToolHistory)) {
+          const prefix = hasPriorTurns ? history.slice(0, currentIndex) : history;
+          try {
+            const summary = await this.compress(prefix, threshold, signal);
+            signal.throwIfAborted();
+            const entry = { role: 'user', content: `<system-info>此前对话与行动摘要：\n${summary}\n</system-info>` };
+            if (hasPriorTurns) history.splice(0, currentIndex, entry);
+            else history.splice(0, history.length, entry, userMessage);
+            conversation.summary = entry;
+            delete conversation.usage;
+            estimate = estimateContext(prompt, history);
+          } catch (error) {
+            signal.throwIfAborted();
+            compressionFailed = true;
+            this.emit({ kind: 'error', text: `无法压缩对话上下文：${message(error)}` });
+          }
+        }
         const toolsEnabled = request < 7;
-        const body = adapter.request(this.model.model, prompt, history, toolsEnabled);
-        const result = await fetch(protocols[protocol].path, {
-          method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body), signal: AbortSignal.any([signal, AbortSignal.timeout(65000)]),
-        });
-        if (!result.ok) throw new Error(await proxyError(result));
-        const payload: unknown = await result.json();
-        await this.tools.whenActive(signal);
+        const reply = await this.generate(prompt, history, toolsEnabled ? 'auto' : 'none', signal, onDelta);
         signal.throwIfAborted();
-        const reply = adapter.read(payload);
+        if (reply.inputTokens) conversation.usage = { key: usageKey, estimate, tokens: reply.inputTokens };
+        if (!output.some((event) => event.kind === 'assistant')) onDelta('assistant', reply.text);
         if (!reply.call) {
           history.push(...reply.history);
-          if (reply.text) this.emit({ kind: 'assistant', text: reply.text });
+          output = [];
           return;
         }
         if (!toolsEnabled) throw new Error('模型在回合结束时仍请求执行工具');
-        uncommittedText = reply.text;
-        if (uncommittedText) this.emit({ kind: 'assistant', text: uncommittedText });
+        completedTool = { history: reply.history, call: reply.call };
+        await this.tools.whenActive(signal);
+        signal.throwIfAborted();
         const toolResult = await this.runTool(reply.call, signal);
         signal.throwIfAborted();
         history.push(...reply.history, ...adapter.result(reply.call, toolResult));
-        uncommittedText = undefined;
+        completedTool = undefined;
+        output = [];
       }
     } catch (error) {
-      if (signal.aborted) {
-        if (uncommittedText && history.includes(userMessage)) {
-          history.push({ role: 'assistant', content: uncommittedText });
-        }
-        return;
+      if (!signal.aborted) {
+        retainOutput();
+        this.emit({ kind: 'error', text: message(error) });
       }
-      await this.tools.whenActive(signal).catch(() => undefined);
-      if (!signal.aborted) this.emit({ kind: 'error', text: message(error) });
     } finally {
+      signal.removeEventListener('abort', retainOutput);
+      this.turn = undefined;
       this.busy = false;
+    }
+  }
+
+  private async compress(history: Record<string, unknown>[], threshold: number, signal: AbortSignal) {
+    const instruction = personalize(
+      '压缩 Vibe 和 {{user}} 的对话及游戏记录，简明保留 {{user}} 的指示、目标、已知关卡状态、已执行的动作和结果。' +
+      '保留上一段摘要中的有效信息，只输出更新后的摘要，控制在 500 字以内。', this.username,
+    );
+    const transcript = Array.from(contextToSummarize(history));
+    const chunkSize = Math.max(1000, Math.min(24000, Math.floor(threshold / 2)));
+    let summary = '';
+    for (let start = 0; start < transcript.length; start += chunkSize) {
+      const chunk = transcript.slice(start, start + chunkSize).join('');
+      const reply = await this.generate(instruction, [{
+        role: 'user', content: summary ? `上一段摘要：\n${summary}\n\n后续记录：\n${chunk}` : chunk,
+      }], 'omit', signal, () => {});
+      if (!reply.text.trim()) throw new Error('模型未返回摘要');
+      summary = reply.text.trim();
+    }
+    return summary;
+  }
+
+  private async generate(
+    prompt: string, history: Record<string, unknown>[], tools: 'auto' | 'none' | 'omit',
+    signal: AbortSignal, emit: (kind: OutputKind, text: string) => void,
+  ) {
+    signal.throwIfAborted();
+    const protocol = this.model.api;
+    const body = adapters[protocol].request(this.model, prompt, history, tools);
+    const idle = new AbortController();
+    const requestSignal = AbortSignal.any([signal, idle.signal]);
+    let timer: ReturnType<typeof setTimeout>;
+    function resetTimer() {
+      clearTimeout(timer);
+      timer = setTimeout(() => idle.abort(new DOMException('模型请求超时', 'TimeoutError')), 65000);
+    }
+    resetTimer();
+    try {
+      const response = await fetch(protocols[protocol].path, {
+        method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body), signal: requestSignal,
+      });
+      if (requestSignal.aborted) {
+        void response.body?.cancel().catch(() => {});
+        requestSignal.throwIfAborted();
+      }
+      if (!response.ok) throw new Error(await proxyError(response));
+      const stream = streamReply(protocol, emit);
+      resetTimer();
+      await readEventStream(response, (data) => acceptStreamEvent(stream, data), requestSignal, resetTimer);
+      return stream.finish();
+    } catch (error) {
+      requestSignal.throwIfAborted();
+      throw error;
+    } finally {
+      clearTimeout(timer!);
     }
   }
 
@@ -142,7 +289,7 @@ export class Agent {
         if (this.tools.outcome() !== 'active') throw new Error('关卡已结束');
         const steps = compileActions(args);
         this.emit({ kind: 'tool', text: '执行动作', detail: JSON.stringify(args, null, 2) });
-        await this.tools.execute(steps);
+        await this.tools.execute(steps, signal);
         signal.throwIfAborted();
         return { text: 'Ok' };
       }
@@ -154,6 +301,10 @@ export class Agent {
       return { text: `Error: ${text}`, error: true };
     }
   }
+}
+
+function thinkingContext(text: string): string {
+  return `<thinking>${text}</thinking>`;
 }
 
 function message(error: unknown): string {
@@ -172,6 +323,6 @@ async function proxyError(response: Response): Promise<string> {
   if (response.status === 429) return '模型接口已限流或额度不足';
   if (response.status === 502) return '无法连接上游模型接口';
   if (response.status === 504) return '上游模型请求超时';
-  if (response.status === 400 || response.status === 422) return '上游未接受模型请求，请确认模型支持截图和工具调用';
+  if (response.status === 400 || response.status === 422) return '上游未接受模型请求，请检查模型支持的思考强度、截图和工具调用';
   return `模型请求失败（HTTP ${response.status}）`;
 }

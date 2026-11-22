@@ -11,6 +11,7 @@ import { element, formatDuration } from './elements.ts';
 type RunOptions = {
   level: LevelDefinition;
   model: ModelSettings | null;
+  username: string;
   conversation: Conversation;
   completedAt?: string;
   savedRun?: SavedRun;
@@ -28,9 +29,11 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     <div class="run-layout">
       <aside class="panel run-sidebar">
         <div class="sidebar-header"><h2>与 Vibe 对话</h2><button class="text-button" type="button" data-clear-chat disabled>清空历史</button></div>
-        <div class="messages" role="log" aria-label="对话与工具事件" data-messages></div>
+        <div class="messages" id="vibe-chat-history" role="log" aria-label="对话与工具事件" data-messages></div>
+        <div class="chat-divider" role="separator" tabindex="0" aria-orientation="horizontal"
+          aria-label="调整对话历史和输入栏高度" aria-controls="vibe-chat-history" data-chat-divider></div>
         <form class="composer" data-composer>
-          <textarea aria-label="发给 Vibe 的消息" placeholder="告诉 Vibe 下一步怎么做…" rows="3" required></textarea>
+          <textarea aria-label="发给 Vibe 的消息" placeholder="告诉 Vibe 下一步怎么做…" rows="3"></textarea>
           <div class="composer-footer"><span class="subtle" data-run-status></span><button class="text-button" type="button" data-connect>配置模型</button><button class="primary" type="submit" disabled>发送</button></div>
         </form>
         ${editor ? `
@@ -80,6 +83,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   const manualSwitch = root.querySelector<HTMLInputElement>('[data-manual]');
   const composer = element<HTMLFormElement>(root, '[data-composer]');
   const messages = element(root, '[data-messages]');
+  const divider = element(root, '[data-chat-divider]');
   const input = element<HTMLTextAreaElement>(composer, 'textarea');
   const send = element<HTMLButtonElement>(composer, 'button[type="submit"]');
   const connect = element<HTMLButtonElement>(composer, '[data-connect]');
@@ -99,6 +103,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
 
   let level = options.level;
   let model = options.model;
+  let username = options.username;
+  const entries = new WeakMap<ChatEvent, HTMLElement>();
   let manual = false;
   let agent: Agent | undefined;
   let lastRecord = 0;
@@ -113,8 +119,10 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   function refreshStatus() {
     const busy = agent?.busy ?? false;
     const ended = runtime.world.outcome !== 'active';
-    send.disabled = !agent || busy || ended || manual || !input.value.trim();
-    connect.hidden = Boolean(model) || manual;
+    send.disabled = !busy && (!agent || ended || manual || !input.value.trim());
+    send.textContent = busy ? '中断' : '发送';
+    connect.textContent = username ? '配置模型' : '设置用户名';
+    connect.hidden = Boolean(model && username) || manual;
     input.disabled = ended || manual;
     clearChat.disabled = conversation.events.length === 0;
     status.textContent = manual ? '手动控制中' : busy ? 'Vibe 行动中' : ended ? '关卡已结束' : agent ? '等待指令' : '';
@@ -148,7 +156,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     else if (outcome === 'won') stageStatus.textContent = '通关成功，红色按钮已踩下';
     else stageStatus.innerHTML = manual
       ? '<kbd>A</kbd> <kbd>D</kbd> / <kbd>←</kbd> <kbd>→</kbd> 移动 <span class="divider">·</span> <kbd>W</kbd> <kbd>↑</kbd> <kbd>空格</kbd> 跳跃'
-      : '<i class="target-dot"></i>踩下红色按钮';
+      : '<i class="target-dot"></i>通关目标：踩下红色按钮';
     if (saveError) stageStatus.textContent += ` · ${saveError}`;
   }
 
@@ -207,8 +215,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     messages.innerHTML = `
       <div class="chat-empty">
         <img class="vibe-mark" src="/favicon.svg" alt="" width="32" height="32">
-        <strong>告诉 Vibe 下一步</strong>
-        <p>${editor ? '描述你希望 Vibe 怎样探索这张地图。' : '试着说「先看看画面，再向右走到红色按钮。」'}</p>
+        <strong>告诉 Vibe 该做什么</strong>
+        <p>${editor ? '描述你希望 Vibe 怎样探索这张地图。' : '试着说「走到右边的红色按钮上」'}</p>
       </div>`;
   }
 
@@ -220,16 +228,16 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
 
   function replaceAgent() {
     stopAgent();
-    if (!model || runtime.world.outcome !== 'active') return;
+    if (!model || !username || runtime.world.outcome !== 'active') return;
     agent = new Agent(model, defaultPrompt, {
       whenActive: (requestSignal) => runtime.whenActive(requestSignal),
       readScreen: () => captureScene(runtime.world.snapshot()),
-      execute: (steps) => runtime.execute(steps),
+      execute: (steps, requestSignal) => runtime.execute(steps, requestSignal),
       outcome: () => runtime.world.outcome,
     }, (event) => {
-      appendEvent(messages, event);
+      appendEvent(messages, event, entries, username);
       refreshStatus();
-    }, conversation);
+    }, conversation, username);
   }
 
   function reset() {
@@ -253,7 +261,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     }
   }, ended, options.savedRun?.world);
   if (conversation.events.length === 0) showEmptyChat();
-  else for (const event of conversation.events) appendEvent(messages, event);
+  else for (const event of conversation.events) appendEvent(messages, event, entries, username);
   replaceAgent();
   refreshStage();
   refreshStatus();
@@ -262,6 +270,57 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     checkpoint(true, true);
     window.addEventListener('pagehide', () => checkpoint(true), { signal });
   }
+
+  function chatHeightRange() {
+    const min = parseFloat(getComputedStyle(messages).minHeight);
+    const total = messages.offsetHeight + composer.offsetHeight;
+    const max = Math.max(min, total - parseFloat(getComputedStyle(composer).minHeight));
+    return { min, max, total };
+  }
+
+  function resizeChat(height: number) {
+    const { min, max, total } = chatHeightRange();
+    composer.style.height = `${total - Math.min(max, Math.max(min, height))}px`;
+  }
+
+  const chatResize = new ResizeObserver(() => {
+    const { min, max } = chatHeightRange();
+    divider.setAttribute('aria-valuemin', String(min));
+    divider.setAttribute('aria-valuemax', String(max));
+    divider.setAttribute('aria-valuenow', String(messages.offsetHeight));
+  });
+  chatResize.observe(messages);
+  chatResize.observe(composer);
+
+  let drag: { pointer: number; y: number; historyHeight: number } | undefined;
+  divider.addEventListener('pointerdown', (event) => {
+    if (drag || event.button !== 0) return;
+    divider.focus({ preventScroll: true });
+    divider.setPointerCapture(event.pointerId);
+    drag = { pointer: event.pointerId, y: event.clientY, historyHeight: messages.offsetHeight };
+    event.preventDefault();
+  }, { signal });
+  window.addEventListener('pointermove', (event) => {
+    if (drag?.pointer === event.pointerId) resizeChat(drag.historyHeight + event.clientY - drag.y);
+  }, { signal });
+  function finishDrag(event: PointerEvent) {
+    if (drag?.pointer === event.pointerId) drag = undefined;
+  }
+  window.addEventListener('pointerup', finishDrag, { signal });
+  window.addEventListener('pointercancel', finishDrag, { signal });
+  divider.addEventListener('lostpointercapture', finishDrag, { signal });
+  divider.addEventListener('keydown', (event) => {
+    const height = messages.offsetHeight;
+    switch (event.key) {
+      case 'ArrowUp': resizeChat(height - 16); break;
+      case 'ArrowDown': resizeChat(height + 16); break;
+      case 'Home': resizeChat(chatHeightRange().min); break;
+      case 'End': resizeChat(chatHeightRange().max); break;
+      default: return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+  }, { signal });
 
   function restart() {
     reset();
@@ -288,7 +347,10 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   clearChat.addEventListener('click', () => {
     replaceAgent();
     conversation.events.length = conversation.history.length = 0;
-    conversation.protocol = undefined;
+    delete conversation.protocol;
+    delete conversation.usage;
+    delete conversation.summary;
+    delete conversation.interrupted;
     input.value = '';
     showEmptyChat();
     refreshStatus();
@@ -299,11 +361,15 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
-      if (!send.disabled) composer.requestSubmit();
+      if (!agent?.busy && !send.disabled) composer.requestSubmit();
     }
   }, { signal });
   composer.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (agent?.busy) {
+      agent.interrupt();
+      return;
+    }
     const text = input.value.trim();
     if (send.disabled || !agent || !text) return;
     const current = agent;
@@ -347,8 +413,9 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       if (changed) reset();
     },
     redraw() { draw(runtime.world.snapshot()); },
-    onModelChange(next: ModelSettings | null) {
+    onSettingsChange(next: ModelSettings | null, nextUsername: string) {
       model = next;
+      username = nextUsername;
       replaceAgent();
       refreshStatus();
     },
@@ -361,6 +428,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       checkpoint(true);
       window.clearInterval(checkpointTimer);
       result?.close();
+      chatResize.disconnect();
       events.abort();
       agent?.dispose();
       runtime.dispose();
@@ -368,7 +436,14 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   };
 }
 
-function appendEvent(log: HTMLElement, event: ChatEvent) {
+function appendEvent(log: HTMLElement, event: ChatEvent, entries: WeakMap<ChatEvent, HTMLElement>, username: string) {
+  const follow = log.scrollHeight - log.clientHeight - log.scrollTop < 30;
+  const existing = entries.get(event);
+  if (existing) {
+    existing.textContent = event.text;
+    if (follow) log.scrollTop = log.scrollHeight;
+    return;
+  }
   log.querySelector('.chat-empty')?.remove();
   if (event.kind === 'tool') {
     const entry = document.createElement('details');
@@ -387,15 +462,26 @@ function appendEvent(log: HTMLElement, event: ChatEvent) {
       entry.append(content);
     }
     log.append(entry);
+  } else if (event.kind === 'thinking') {
+    const entry = document.createElement('details');
+    entry.className = 'message thinking';
+    const title = document.createElement('summary');
+    title.textContent = '思考';
+    const content = document.createElement('p');
+    content.textContent = event.text;
+    entries.set(event, content);
+    entry.append(title, content);
+    log.append(entry);
   } else {
     const entry = document.createElement('div');
     entry.className = `message ${event.kind}`;
     const name = document.createElement('span');
-    name.textContent = event.kind === 'assistant' ? 'Vibe' : event.kind === 'player' ? '你' : '连接提示';
+    name.textContent = event.kind === 'assistant' ? 'Vibe' : event.kind === 'player' ? username : '连接提示';
     const content = document.createElement('p');
     content.textContent = event.text;
+    entries.set(event, content);
     entry.append(name, content);
     log.append(entry);
   }
-  log.scrollTop = log.scrollHeight;
+  if (follow || event.kind === 'player') log.scrollTop = log.scrollHeight;
 }

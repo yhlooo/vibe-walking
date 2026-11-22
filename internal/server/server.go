@@ -92,10 +92,12 @@ func newHandler(dataDir string, localOnly bool, logger logr.Logger) (http.Handle
 	if err != nil {
 		return nil, err
 	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 60 * time.Second
 	s := &service{
 		levels: library,
-		path:   settingsPath, model: cfg.Model, logger: logger,
-		client: &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+		path:   settingsPath, settings: *cfg, logger: logger,
+		client: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		}},
 	}

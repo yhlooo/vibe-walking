@@ -99,11 +99,18 @@ export class Runtime {
     }
   }
 
-  execute(steps: StepInput[]): Promise<void> {
+  async execute(steps: StepInput[], signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (this.manual || this.sequence || !steps.length || this.world.outcome !== 'active') {
-      return Promise.reject(new Error('当前无法执行动作'));
+      throw new Error('当前无法执行动作');
     }
-    return new Promise((resolve, reject) => { this.sequence = { steps, index: 0, resolve, reject }; });
+    const cancel = () => this.cancelSequence();
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      await new Promise<void>((resolve, reject) => { this.sequence = { steps, index: 0, resolve, reject }; });
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+    }
   }
 
   cancelSequence() {

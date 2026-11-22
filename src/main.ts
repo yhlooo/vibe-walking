@@ -1,4 +1,4 @@
-import { protocols, readSettings, saveSettings } from './agent/settings.ts';
+import { defaultMaxInputToken, protocols, readSettings, saveSettings } from './agent/settings.ts';
 import type { ModelSettings, Protocol } from './agent/settings.ts';
 import type { Conversation } from './agent/agent.ts';
 import { mountEditor } from './editor/editor.ts';
@@ -22,12 +22,25 @@ app.innerHTML = `
     <section class="scene-content settings-scene" data-settings-scene hidden>
       <a class="scene-back" href="#/" data-settings-back>← 返回</a>
       <h1>设置</h1>
+      <form class="settings-form" data-username-form>
+        <h2>称呼</h2>
+        <label>用户名<textarea rows="1" autocomplete="nickname" data-username required></textarea></label>
+        <p class="settings-status" role="status" data-username-status hidden></p>
+        <div class="dialog-actions"><button type="submit" class="primary">保存用户名</button></div>
+      </form>
       <form class="settings-form" data-settings-form>
         <h2>模型连接</h2>
         <fieldset>
           <label>协议<select data-protocol></select></label>
           <label>Base URL<input type="url" autocomplete="off" placeholder="https://api.openai.com/v1" data-base-url required></label>
           <label>模型 ID<input type="text" autocomplete="off" data-model-id required></label>
+          <label>上下文长度（K）<input type="number" min="0.001" step="0.001" data-context-limit required></label>
+          <label>思考强度<select data-effort>
+            <option value="">默认</option>
+            <option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>ultra</option>
+            <option value="custom">自定义</option>
+          </select></label>
+          <label data-custom-effort-label hidden>自定义思考强度<input type="text" autocomplete="off" data-custom-effort></label>
           <label>API Key<input type="password" autocomplete="off" data-api-key></label>
           <label class="checkbox" data-remove-label hidden><input type="checkbox" data-remove-key>移除已保存的密钥</label>
         </fieldset>
@@ -36,6 +49,12 @@ app.innerHTML = `
       </form>
     </section>
   </main>
+  <dialog class="settings-dialog" aria-labelledby="username-title" data-username-setup>
+    <div class="dialog-header">
+      <h2 id="username-title">设置用户名</h2>
+      <form method="dialog"><button class="icon-button" aria-label="返回主界面">×</button></form>
+    </div>
+  </dialog>
   <dialog class="settings-dialog" aria-labelledby="setup-title" data-model-setup>
     <div class="dialog-header">
       <h2 id="setup-title">设置模型连接</h2>
@@ -61,13 +80,22 @@ const menuToggle = element<HTMLButtonElement>(app, '[data-menu-toggle]');
 const menu = element<HTMLDialogElement>(app, '[data-menu]');
 const resumeButton = element<HTMLButtonElement>(menu, '[data-resume]');
 const settingsScene = element(app, '[data-settings-scene]');
+const usernameSetup = element<HTMLDialogElement>(app, '[data-username-setup]');
+const usernameForm = element<HTMLFormElement>(settingsScene, '[data-username-form]');
+const usernameInput = element<HTMLTextAreaElement>(usernameForm, '[data-username]');
+const usernameStatus = element(usernameForm, '[data-username-status]');
+const submitUsername = element<HTMLButtonElement>(usernameForm, 'button[type="submit"]');
 const modelSetup = element<HTMLDialogElement>(app, '[data-model-setup]');
 const settingsBack = element<HTMLAnchorElement>(settingsScene, '[data-settings-back]');
-const settingsForm = element<HTMLFormElement>(settingsScene, 'form');
+const settingsForm = element<HTMLFormElement>(settingsScene, '[data-settings-form]');
 const settingsFields = element<HTMLFieldSetElement>(settingsForm, 'fieldset');
 const protocolInput = element<HTMLSelectElement>(settingsForm, '[data-protocol]');
 const addressInput = element<HTMLInputElement>(settingsForm, '[data-base-url]');
 const modelInput = element<HTMLInputElement>(settingsForm, '[data-model-id]');
+const contextInput = element<HTMLInputElement>(settingsForm, '[data-context-limit]');
+const effortInput = element<HTMLSelectElement>(settingsForm, '[data-effort]');
+const customEffortLabel = element(settingsForm, '[data-custom-effort-label]');
+const customEffortInput = element<HTMLInputElement>(customEffortLabel, 'input');
 const keyInput = element<HTMLInputElement>(settingsForm, '[data-api-key]');
 const removeLabel = element<HTMLLabelElement>(settingsForm, '[data-remove-label]');
 const removeKey = element<HTMLInputElement>(settingsForm, '[data-remove-key]');
@@ -82,6 +110,8 @@ let warnings: string[] = [];
 let progress: Progress = { levels: {} };
 const editorWrites = new Map<string, Promise<void>>();
 let latestSave = 0;
+let username = '';
+let usernameSetupRoute = '';
 let model: ModelSettings | null = null;
 let modelKnown = false;
 let firstPlayChecked = false;
@@ -120,7 +150,7 @@ async function renderRoute() {
   const custom = route === '#/levels/custom';
   const isLevels = route === '#/levels' || custom || route === '#/create';
   const builtIns = library.filter(({ kind }) => kind === 'builtin');
-  const id = route === '#/play' ? builtIns[0].id : route.split('/')[2];
+  const id = route === '#/play' ? builtIns[0]?.id : route.split('/')[2];
   const leavingEditor = mountedRoute.startsWith('#/create/') && route !== '#/settings';
   while (true) {
     const pending = [editorWrites.get(id), leavingEditor ? editorWrites.get(mountedRoute.split('/')[2]) : undefined];
@@ -129,6 +159,7 @@ async function renderRoute() {
     if (request !== routeRequest || route !== (location.hash || '#/')) return;
   }
   menu.close();
+  if (usernameSetup.open && usernameSetupRoute !== route) closeUsernameSetup();
   if (modelSetup.open) {
     modelSetup.close();
     settingsScene.append(settingsForm);
@@ -143,6 +174,8 @@ async function renderRoute() {
     backdrop.hidden = false;
     syncPause();
     settingsMessage('');
+    usernameMessage('');
+    usernameInput.value = username;
     fillSettings();
     window.scrollTo(0, 0);
     void loadSettings(true);
@@ -161,9 +194,25 @@ async function renderRoute() {
     }
   }
 
+  const entry = library.find((level) => level.id === id);
+  if (isPlay && entry && !playableError(entry.level) && !username) {
+    disposeScene();
+    mountedRoute = '';
+    workspace.replaceChildren();
+    backdrop.hidden = false;
+    if (!usernameSetup.open) {
+      usernameSetupRoute = route;
+      usernameInput.value = '';
+      usernameMessage('');
+      usernameSetup.append(usernameForm);
+      usernameSetup.showModal();
+      usernameInput.focus();
+    }
+    return;
+  }
+
   disposeScene();
   mountedRoute = route;
-  const entry = library.find((level) => level.id === id);
   if (isEditor && entry?.kind === 'custom') {
     renderEditor(entry);
   } else if (isPlay && entry && !playableError(entry.level)) {
@@ -196,7 +245,7 @@ function renderEditor(entry: LevelEntry) {
   menuToggle.hidden = false;
   const { id } = entry;
   activeRun = mountEditor(workspace, {
-    level: entry.level, model, conversation: conversationFor(`create/${id}`), openSettings,
+    level: entry.level, model, username, conversation: conversationFor(`create/${id}`), openSettings,
     save(level: LevelDefinition) {
       const previous = editorWrites.get(id) ?? Promise.resolve();
       const pending = previous.catch(() => {}).then(async () => {
@@ -220,7 +269,7 @@ function renderRun(entry: LevelEntry, next?: LevelEntry) {
   const { id, level, revision } = entry;
   const record = progress.levels[id];
   activeRun = mountRun(workspace, {
-    level, model, conversation: conversationFor(`play/${id}`),
+    level, model, username, conversation: conversationFor(`play/${id}`),
     completedAt: record?.completedAt,
     savedRun: record?.revision === revision ? record.run : undefined,
     nextLevel: next && `#/play/${next.id}`,
@@ -266,11 +315,25 @@ function openMenu() {
   syncPause();
 }
 
-function applySettings(next: ModelSettings | null, reset = false) {
-  const changed = next?.api !== model?.api || next?.baseURL !== model?.baseURL ||
-    next?.model !== model?.model || next?.hasAPIKey !== model?.hasAPIKey;
-  model = next;
-  if (changed || reset) activeRun?.onModelChange(next);
+function applySettings(next: Awaited<ReturnType<typeof readSettings>>, reset = false) {
+  const changed = next.username !== username || next.model?.api !== model?.api || next.model?.baseURL !== model?.baseURL ||
+    next.model?.model !== model?.model || next.model?.hasAPIKey !== model?.hasAPIKey ||
+    next.model?.maxInputToken !== model?.maxInputToken || next.model?.reasoningEffort !== model?.reasoningEffort;
+  username = next.username;
+  model = next.model;
+  if (changed || reset) activeRun?.onSettingsChange(model, username);
+}
+
+function closeUsernameSetup() {
+  usernameSetupRoute = '';
+  usernameSetup.close();
+  settingsScene.insertBefore(usernameForm, settingsForm.parentElement === settingsScene ? settingsForm : null);
+}
+
+function usernameMessage(text: string, error = false) {
+  usernameStatus.textContent = text;
+  usernameStatus.hidden = !text;
+  usernameStatus.classList.toggle('invalid', error);
 }
 
 function settingsMessage(text: string, error = false) {
@@ -293,10 +356,22 @@ function fillSettings() {
   protocolInput.value = api;
   addressInput.value = model?.baseURL ?? protocols[api].baseURL;
   modelInput.value = model?.model ?? '';
+  contextInput.value = String((model?.maxInputToken ?? defaultMaxInputToken) / 1000);
+  const effort = model?.reasoningEffort ?? '';
+  const preset = [...effortInput.options].some((option) => option.value === effort && option.value !== 'custom');
+  effortInput.value = preset ? effort : 'custom';
+  customEffortInput.value = preset ? '' : effort;
+  updateCustomEffort();
   keyInput.value = '';
   removeKey.checked = false;
   clearSettings.hidden = !model;
   updateKeyHint();
+}
+
+function updateCustomEffort() {
+  const custom = effortInput.value === 'custom';
+  customEffortLabel.hidden = !custom;
+  customEffortInput.required = custom;
 }
 
 function lockSettings(locked: boolean) {
@@ -309,10 +384,14 @@ async function loadSettings(inScene: boolean) {
   try {
     const next = await readSettings(AbortSignal.timeout(5000));
     if (request !== settingsRequest) return;
+    const refreshUsername = usernameInput.value === username;
     modelKnown = true;
     applySettings(next);
     maybeOpenModelSetup();
-    if (inScene && !settingsScene.hidden) fillSettings();
+    if (inScene && !settingsScene.hidden) {
+      if (refreshUsername) usernameInput.value = username;
+      fillSettings();
+    }
   } catch {
     if (request === settingsRequest && inScene) settingsMessage('无法读取模型设置', true);
   } finally {
@@ -320,28 +399,55 @@ async function loadSettings(inScene: boolean) {
   }
 }
 
-async function commitSettings(value: Parameters<typeof saveSettings>[0]) {
+async function commitSettings(update: Parameters<typeof saveSettings>[0]) {
   if (saving) return;
+  const writingUsername = update.username !== undefined;
+  const showMessage = writingUsername ? usernameMessage : settingsMessage;
   saving = true;
   settingsRequest++;
   lockSettings(true);
-  settingsMessage('');
+  usernameInput.disabled = submitUsername.disabled = true;
+  showMessage('');
   try {
-    applySettings(await saveSettings(value, AbortSignal.timeout(10000)), true);
+    applySettings(await saveSettings(update, AbortSignal.timeout(10000)), !writingUsername);
     modelKnown = true;
-    fillSettings();
-    settingsMessage(value ? '设置已保存' : '已清除模型连接');
-    if (value && modelSetup.open) modelSetup.close();
+    if (writingUsername) {
+      showMessage('用户名已保存');
+      if (usernameSetup.open) {
+        closeUsernameSetup();
+        void renderRoute();
+      }
+    } else {
+      fillSettings();
+      showMessage(update.model ? '设置已保存' : '已清除模型连接');
+      if (update.model && modelSetup.open) modelSetup.close();
+    }
   } catch (error) {
-    settingsMessage(error instanceof Error && error.name !== 'TimeoutError' ? error.message : '保存模型设置超时', true);
+    showMessage(error instanceof Error && error.name !== 'TimeoutError' ? error.message : '保存设置超时', true);
   } finally {
     saving = false;
     lockSettings(false);
+    usernameInput.disabled = submitUsername.disabled = false;
   }
 }
 
 menuToggle.addEventListener('click', openMenu);
 menu.addEventListener('close', syncPause);
+usernameSetup.addEventListener('close', () => {
+  if (usernameSetup.open || !usernameSetupRoute) return;
+  const route = usernameSetupRoute;
+  closeUsernameSetup();
+  if (location.hash === route) location.hash = '#/';
+});
+usernameForm.addEventListener('submit', (event) => {
+  event.preventDefault();
+  const value = usernameInput.value;
+  if (Array.from(value).length > 20) {
+    usernameMessage('用户名最多 20 个字符', true);
+    return;
+  }
+  if (value) void commitSettings({ username: value });
+});
 modelSetup.addEventListener('close', () => {
   if (modelSetup.open || settingsForm.parentElement !== modelSetup) return;
   settingsScene.append(settingsForm);
@@ -362,21 +468,33 @@ protocolInput.addEventListener('change', () => {
   updateKeyHint();
 });
 addressInput.addEventListener('input', updateKeyHint);
+effortInput.addEventListener('change', updateCustomEffort);
 settingsForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const apiKey = keyInput.value.trim();
-  void commitSettings({
+  const maxInputToken = Math.round(contextInput.valueAsNumber * 1000);
+  const reasoningEffort = (effortInput.value === 'custom' ? customEffortInput.value : effortInput.value).trim();
+  if (!Number.isSafeInteger(maxInputToken) || maxInputToken <= 0) {
+    settingsMessage('上下文长度超出范围', true);
+    return;
+  }
+  if (effortInput.value === 'custom' && !reasoningEffort) {
+    settingsMessage('请输入自定义思考强度', true);
+    return;
+  }
+  void commitSettings({ model: {
     api: protocolInput.value as Protocol, baseURL: addressInput.value.trim(), model: modelInput.value.trim(),
+    maxInputToken, reasoningEffort,
     ...(removeKey.checked ? { apiKey: '' } : apiKey ? { apiKey } : {}),
-  });
+  } });
 });
-clearSettings.addEventListener('click', () => { void commitSettings(null); });
+clearSettings.addEventListener('click', () => { void commitSettings({ model: null }); });
 window.addEventListener('hashchange', () => { void renderRoute(); });
 
 async function initialize() {
   workspace.innerHTML = '<p class="muted" role="status">正在读取本地关卡和进度…</p>';
   try {
-    const [catalog, saved] = await Promise.all([readCatalog(), readProgress()]);
+    const [catalog, saved] = await Promise.all([readCatalog(), readProgress(), loadSettings(false)]);
     library = catalog.levels;
     warnings = catalog.warnings ?? [];
     progress = saved;
@@ -397,4 +515,3 @@ async function initialize() {
 }
 
 void initialize();
-void loadSettings(false);

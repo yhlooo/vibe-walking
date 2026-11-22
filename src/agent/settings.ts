@@ -7,35 +7,53 @@ export const protocols = {
 };
 
 export type Protocol = keyof typeof protocols;
-export type ModelSettings = { api: Protocol; baseURL: string; model: string; hasAPIKey: boolean };
-type Update = Omit<ModelSettings, 'hasAPIKey'> & { apiKey?: string };
+export const defaultMaxInputToken = 1_000_000;
+export type ModelSettings = {
+  api: Protocol;
+  baseURL: string;
+  model: string;
+  hasAPIKey: boolean;
+  maxInputToken: number;
+  reasoningEffort: string;
+};
+type Settings = { username: string; model: ModelSettings | null };
+type ModelUpdate = Omit<ModelSettings, 'hasAPIKey'> & { apiKey?: string };
+export type SettingsUpdate = { username?: string; model?: ModelUpdate | null };
 
-function parseSettings(value: unknown): ModelSettings | null {
+function parseSettings(value: unknown): Settings {
   if (isRecord(value)) {
     const model = value.model;
-    if (model === null) return null;
+    const username = typeof value.username === 'string' ? value.username : '';
+    if (model === null) return { username, model };
     if (isRecord(model) && typeof model.api === 'string' && Object.hasOwn(protocols, model.api) &&
         typeof model.baseURL === 'string' && typeof model.model === 'string' && typeof model.hasAPIKey === 'boolean') {
-      return { api: model.api as Protocol, baseURL: model.baseURL, model: model.model, hasAPIKey: model.hasAPIKey };
+      return {
+        username,
+        model: {
+          api: model.api as Protocol, baseURL: model.baseURL, model: model.model, hasAPIKey: model.hasAPIKey,
+          maxInputToken: typeof model.maxInputToken === 'number' ? model.maxInputToken : defaultMaxInputToken,
+          reasoningEffort: typeof model.reasoningEffort === 'string' ? model.reasoningEffort : '',
+        },
+      };
     }
   }
-  throw new Error('模型设置响应格式不正确');
+  throw new Error('设置响应格式不正确');
 }
 
-export async function readSettings(signal?: AbortSignal): Promise<ModelSettings | null> {
+export async function readSettings(signal?: AbortSignal): Promise<Settings> {
   const response = await fetch('/api/v1/settings', { cache: 'no-store', signal });
-  if (!response.ok) throw new Error('无法读取模型设置');
+  if (!response.ok) throw new Error('无法读取设置');
   return parseSettings(await response.json());
 }
 
-export async function saveSettings(model: Update | null, signal?: AbortSignal): Promise<ModelSettings | null> {
+export async function saveSettings(update: SettingsUpdate, signal?: AbortSignal): Promise<Settings> {
   const response = await fetch('/api/v1/settings', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }), signal,
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(update), signal,
   });
   const value: unknown = await response.json();
   if (!response.ok) {
     const error = isRecord(value) && value.error;
-    throw new Error(isRecord(error) && typeof error.message === 'string' ? error.message : '无法保存模型设置');
+    throw new Error(isRecord(error) && typeof error.message === 'string' ? error.message : '无法保存设置');
   }
   return parseSettings(value);
 }

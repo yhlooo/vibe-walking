@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bufio"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -164,4 +168,97 @@ func send(handler http.Handler, method, path, body string) *httptest.ResponseRec
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	return response
+}
+
+func TestUsernameAndModelOptionsAreSavedIndependently(t *testing.T) {
+	dir := t.TempDir()
+	handler, err := newHandler(dir, true, logr.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := " " + strings.Repeat("🙂", 18) + " "
+	settings, _ := json.Marshal(map[string]string{"username": name})
+	if got := send(handler, http.MethodPost, "/api/v1/settings", string(settings)); got.Code != http.StatusOK {
+		t.Fatalf("save username: %d %s", got.Code, got.Body)
+	}
+	settings, _ = json.Marshal(map[string]string{"username": name + "界"})
+	if got := send(handler, http.MethodPost, "/api/v1/settings", string(settings)); got.Code != http.StatusBadRequest {
+		t.Fatalf("overlength username: %d %s", got.Code, got.Body)
+	}
+	model := `{"model":{"api":"OpenAIResponses","baseURL":"https://example.com/v1","model":"mock"}}`
+	if got := send(handler, http.MethodPost, "/api/v1/settings", model); !strings.Contains(got.Body.String(), `"maxInputToken":1000000`) {
+		t.Fatalf("default context length: %s", got.Body)
+	}
+	model = strings.Replace(model, `"model":"mock"`, `"model":"mock","maxInputToken":32768,"reasoningEffort":"custom"`, 1)
+	if got := send(handler, http.MethodPost, "/api/v1/settings", model); got.Code != http.StatusOK {
+		t.Fatalf("save model options: %d %s", got.Code, got.Body)
+	}
+	restarted, err := newHandler(dir, true, logr.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := send(restarted, http.MethodGet, "/api/v1/settings", "")
+	var saved settingsSummary
+	if err := json.Unmarshal(got.Body.Bytes(), &saved); err != nil || saved.Username != name ||
+		saved.Model == nil || saved.Model.MaxInputToken != 32768 || saved.Model.ReasoningEffort != "custom" {
+		t.Fatalf("settings after restart: %s", got.Body)
+	}
+	got = send(restarted, http.MethodPost, "/api/v1/settings", `{"model":null}`)
+	if err := json.Unmarshal(got.Body.Bytes(), &saved); err != nil || saved.Username != name || saved.Model != nil {
+		t.Fatalf("clear model: %s", got.Body)
+	}
+}
+
+func TestProxyFlushesEventsAndCancelsUpstream(t *testing.T) {
+	stopped := make(chan struct{})
+	unblock := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if accept := r.Header.Get("Accept"); accept != "text/event-stream" {
+			t.Errorf("upstream Accept = %q", accept)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: first\n\n")
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("flush upstream: %v", err)
+		}
+		select {
+		case <-r.Context().Done():
+			close(stopped)
+		case <-unblock:
+		}
+	}))
+	defer upstream.Close()
+	defer close(unblock)
+
+	handler, err := newHandler(t.TempDir(), true, logr.Discard())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings := `{"model":{"api":"OpenAIResponses","baseURL":"` + upstream.URL + `","model":"fixture"}}`
+	if reply := send(handler, http.MethodPost, "/api/v1/settings", settings); reply.Code != http.StatusOK {
+		t.Fatalf("save model: %s", reply.Body)
+	}
+	proxy := httptest.NewServer(handler)
+	defer proxy.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxy.URL+"/llmproxies/responses", strings.NewReader(`{"stream":true}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := proxy.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	line, err := bufio.NewReader(response.Body).ReadString('\n')
+	if err != nil || line != "data: first\n" {
+		t.Fatalf("first event before upstream ends: %q, %v", line, err)
+	}
+	cancel()
+	select {
+	case <-stopped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("browser cancellation did not reach upstream")
+	}
 }
