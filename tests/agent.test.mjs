@@ -126,7 +126,14 @@ for (const protocol of Object.keys(protocols)) {
     const agent = new Agent(model, prompt, {
       readScreen() { statesSeen.push(world.outcome); return png; },
       async whenActive() {},
-      async execute(steps) { for (const input of steps) world.step(input); },
+      async execute(steps) {
+        for (const input of steps) {
+          let remaining = world.step(input);
+          while (remaining > 0 && world.outcome === 'active') {
+            remaining = world.step({ ...input, jump: false, distance: remaining });
+          }
+        }
+      },
       outcome: () => world.outcome,
     }, (entry) => { if (!events.includes(entry)) events.push(entry); });
     globalThis.fetch = async (url, request) => {

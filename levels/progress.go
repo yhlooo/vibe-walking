@@ -25,11 +25,12 @@ type WorldState struct {
 		Y      float64 `json:"y"`
 		Facing int     `json:"facing"`
 	} `json:"player"`
-	VelocityY         float64 `json:"velocityY"`
-	CanJump           bool    `json:"canJump"`
-	PreviousDirection int     `json:"previousDirection"`
-	SlideDirection    int     `json:"slideDirection"`
-	SlideRemaining    float64 `json:"slideRemaining"`
+	VelocityY         float64  `json:"velocityY"`
+	CanJump           bool     `json:"canJump"`
+	PreviousDirection int      `json:"previousDirection"`
+	MoveDistance      *float64 `json:"moveDistance,omitempty"`
+	SlideDirection    int      `json:"slideDirection"`
+	SlideRemaining    float64  `json:"slideRemaining"`
 }
 
 type Run struct {
@@ -149,6 +150,7 @@ func validRun(level Definition, run Run) bool {
 	return validDuration(run.ElapsedMS) && w.Player.X >= 0 && w.Player.X <= float64(len(level.Tiles[0])-1) &&
 		w.Player.Y >= 0 && w.Player.Y < float64(len(level.Tiles)) && (w.Player.Facing == -1 || w.Player.Facing == 1) &&
 		w.VelocityY >= -20 && w.VelocityY <= 20 && direction(w.PreviousDirection) && direction(w.SlideDirection) &&
+		(w.MoveDistance == nil || (*w.MoveDistance >= 0 && *w.MoveDistance <= 1)) &&
 		w.SlideRemaining >= 0 && w.SlideRemaining <= 10
 }
 

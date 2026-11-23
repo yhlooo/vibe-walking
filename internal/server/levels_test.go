@@ -108,7 +108,10 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	run.ElapsedMS = &elapsed
 	update := levels.ProgressUpdate{Revision: builtin.Revision, SavedAt: 10, Recent: true, Run: &run}
 	request("PUT", "progress/"+builtin.ID, update, 200)
-	request("PUT", "progress/"+custom.ID, levels.ProgressUpdate{Revision: saved.Revision, SavedAt: 11, Recent: true, Run: &run}, 200)
+	customRun := run
+	moveDistance := 0.2
+	customRun.World.MoveDistance = &moveDistance
+	request("PUT", "progress/"+custom.ID, levels.ProgressUpdate{Revision: saved.Revision, SavedAt: 11, Recent: true, Run: &customRun}, 200)
 
 	handler = start()
 	assertOrder(legacy.ID, custom.ID)
@@ -122,6 +125,10 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	if entry := savedProgress.Levels[builtin.ID]; savedProgress.RecentBuiltin != builtin.ID ||
 		entry.Run == nil || entry.Run.World.Player.X != 7.25 || *entry.Run.ElapsedMS != elapsed {
 		t.Fatalf("active built-in checkpoint not restored: %+v", savedProgress)
+	}
+	if entry := savedProgress.Levels[custom.ID]; entry.Run == nil || entry.Run.World.MoveDistance == nil ||
+		*entry.Run.World.MoveDistance != moveDistance {
+		t.Fatalf("acceleration progress not restored: %+v", entry.Run)
 	}
 
 	duration := int64(3600)

@@ -22,7 +22,7 @@ const functions = [
   },
   {
     name: 'ExecActionSequence',
-    description: '按顺序执行动作。moveLeft、moveRight 的 value 是格数（0.01～24），sleep 的 value 是秒数（0.001～10），jump 可省略 value。一次最多 32 个动作、30 秒。',
+    description: '按顺序执行动作。moveLeft、moveRight 的 value 是格数（0.01～24），反向时先抵消剩余滑行。手动记录用 hold 代替 value，表示按住方向的秒数（0.001～6）。sleep 的 value 是秒数（0.001～10），jump 可省略 value。一次最多 32 个动作、30 秒。',
     parameters: {
       type: 'object', required: ['actions'], additionalProperties: false,
       properties: {
@@ -30,7 +30,7 @@ const functions = [
           type: 'array', minItems: 1, maxItems: 32,
           items: {
             type: 'object', required: ['key'], additionalProperties: false,
-            properties: { key: { type: 'string', enum: ['jump', 'moveLeft', 'moveRight', 'sleep'] }, value: { type: 'number' } },
+            properties: { key: { type: 'string', enum: ['jump', 'moveLeft', 'moveRight', 'sleep'] }, value: { type: 'number' }, hold: { type: 'number' } },
           },
         },
       },

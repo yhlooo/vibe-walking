@@ -1,5 +1,5 @@
 import { Recorder } from './actions.ts';
-import { idleInput, movePerStep, stepMS, World } from './world.ts';
+import { idleInput, stepMS, World } from './world.ts';
 import type { Direction, Outcome, Snapshot, StepInput, WorldState } from './world.ts';
 import type { LevelDefinition } from '../level/definition.ts';
 
@@ -11,6 +11,7 @@ const controlKeys = new Set([...leftKeys, ...rightKeys, ...jumpKeys]);
 type Sequence = {
   steps: StepInput[];
   index: number;
+  pending?: StepInput;
   resolve: () => void;
   reject: (error: DOMException) => void;
 };
@@ -156,17 +157,21 @@ export class Runtime {
       const left = leftKeys.some((key) => this.pressed.has(key));
       const right = rightKeys.some((key) => this.pressed.has(key));
       const direction: Direction = left === right ? 0 : left ? -1 : 1;
-      input = { direction, jump: this.jump, distance: direction === 0 ? 0 : movePerStep };
+      input = { direction, jump: this.jump };
       this.jump = false;
       this.recorder.record(input);
       if (!this.recorder.started) return this.world.outcome;
     } else if (current) {
-      input = current.steps[current.index++];
+      input = current.pending ?? current.steps[current.index++];
     }
-    const outcome = this.world.step(input);
-    if (current && (current.index === current.steps.length || outcome !== 'active')) {
-      this.sequence = undefined;
-      current.resolve();
+    const remaining = this.world.step(input);
+    const outcome = this.world.outcome;
+    if (current) {
+      current.pending = remaining > 0 ? { direction: input.direction, jump: false, distance: remaining } : undefined;
+      if (outcome !== 'active' || (!current.pending && current.index === current.steps.length)) {
+        this.sequence = undefined;
+        current.resolve();
+      }
     }
     return outcome;
   }
