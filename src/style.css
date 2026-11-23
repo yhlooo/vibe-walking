@@ -182,7 +182,6 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .dialog-header { display: flex; justify-content: space-between; align-items: center; min-height: 31px; margin-bottom: 15px; }
 .dialog-header h2 { font-size: 19px; }
 .icon-button { min-height: 30px; min-width: 30px; padding: 0; font-size: 21px; line-height: 1; }
-.settings-form fieldset { display: grid; gap: 13px; padding: 0; margin: 0; border: 0; min-width: 0; }
 .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 17px; }
 .pause-menu { width: min(340px, calc(100vw - 30px)); }
 .pause-actions { display: grid; gap: 8px; }
@@ -239,10 +238,13 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .level-caption time { display: block; margin-top: 8px; }
 
 .settings-scene { width: min(100%, 540px); }
-.settings-form { display: grid; gap: 13px; margin-bottom: 14px; padding: 18px; background: #231e30ef; border: 1px solid #514466; border-radius: 12px; }
+.settings-form { display: grid; gap: 14px; margin-bottom: 14px; }
+.settings-panel { display: grid; gap: 13px; min-width: 0; margin: 0; padding: 18px; background: #231e30ef; border: 1px solid #514466; border-radius: 12px; }
 .settings-form h2 { font-size: 17px; }
-.settings-form .dialog-actions { margin-top: 0; }
+.settings-actions { display: flex; justify-content: flex-end; }
 .settings-status { font-size: 13px; }
+.api-key-field { display: grid; gap: 6px; }
+.api-key-note { color: #ddd3e9; font-size: 12px; font-weight: 700; line-height: 1.5; }
 .settings-combobox { position: relative; display: grid; gap: 7px; min-width: 0; }
 .settings-combobox:focus-within { z-index: 1; }
 .combobox-input { position: relative; }
@@ -333,7 +335,9 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .level-result p { margin-top: 8px; }
 .level-result .dialog-actions { flex-wrap: wrap; }
 .level-result a { padding-inline: 14px; }
-.settings-dialog .settings-form { padding: 0; margin: 0; border: 0; background: transparent; }
+.settings-dialog .settings-form { margin: 0; }
+.settings-dialog .settings-panel { padding: 0; border: 0; background: transparent; }
+.settings-dialog .settings-panel h2 { display: none; }
 .stage { position: relative; }
 .game-over {
   position: absolute;
@@ -349,9 +353,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .prompt-button { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .prompt-dialog { width: min(760px, calc(100vw - 30px)); }
 .prompt-dialog textarea { display: block; width: 100%; min-height: min(300px, 50dvh); max-height: 65dvh; resize: vertical; line-height: 1.65; }
-.settings-dialog .settings-form > h2 { display: none; }
 
 .message.thinking { color: var(--muted); }
 .message.thinking summary { cursor: pointer; font-size: 12px; }
 .message.thinking > p { margin-top: 6px; }
-.settings-form [data-username] { resize: vertical; }

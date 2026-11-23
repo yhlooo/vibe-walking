@@ -82,10 +82,6 @@ export function drawScene(
   }
 
   if (edit) drawGrid(context, columns, rows, edit.hover);
-  context.fillStyle = '#1a192c';
-  context.fillRect(0, 0, columns, rows * 0.009);
-  context.fillStyle = '#72639c';
-  context.fillRect(0, rows * 0.009, columns, rows * 0.003);
 }
 
 function drawCharacter(context: CanvasRenderingContext2D, { x, y }: Point, facing: -1 | 1) {

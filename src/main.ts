@@ -1,5 +1,5 @@
 import { defaultMaxInputToken, listModels, protocols, readSettings, saveSettings } from './agent/settings.ts';
-import type { ModelSettings, Protocol } from './agent/settings.ts';
+import type { ModelSettings, Protocol, SettingsUpdate } from './agent/settings.ts';
 import type { Conversation } from './agent/agent.ts';
 import { mountEditor } from './editor/editor.ts';
 import { playableError } from './level/definition.ts';
@@ -23,18 +23,19 @@ app.innerHTML = `
     <section class="scene-content settings-scene" data-settings-scene hidden>
       <a class="scene-back" href="#/" data-settings-back>← 返回</a>
       <h1>设置</h1>
-      <form class="settings-form" data-username-form>
-        <h2>称呼</h2>
-        <label>用户名<textarea rows="1" autocomplete="nickname" data-username required></textarea></label>
-        <p class="settings-status" role="status" data-username-status hidden></p>
-        <div class="dialog-actions"><button type="submit" class="primary">保存用户名</button></div>
-      </form>
-      <form class="settings-form" data-settings-form>
-        <h2>模型连接</h2>
-        <fieldset>
+      <form class="settings-form" data-settings-form novalidate>
+        <fieldset class="settings-panel" data-username-fields>
+          <h2>称呼</h2>
+          <label>用户名<input type="text" autocomplete="nickname" data-username></label>
+        </fieldset>
+        <fieldset class="settings-panel" data-model-fields>
+          <h2>模型连接</h2>
           <label>协议<select data-protocol></select></label>
           <label>Base URL<input type="url" autocomplete="off" data-base-url required></label>
-          <label>API Key<input type="password" autocomplete="off" data-api-key></label>
+          <div class="api-key-field">
+            <label>API Key<input type="password" autocomplete="off" aria-describedby="api-key-note" data-api-key></label>
+            <p class="api-key-note" id="api-key-note">（所有 API Key 都在本地存储仅用于调用模型 API ，不会上传到任何第三方）</p>
+          </div>
           <div class="settings-combobox">
             <label id="model-label" for="model-id">模型</label>
             <div class="combobox-input">
@@ -53,21 +54,18 @@ app.innerHTML = `
             </div>
             <ul class="combobox-options" id="effort-options" role="listbox" aria-labelledby="effort-label" hidden></ul>
           </div>
+          <div class="settings-actions" data-clear-connection hidden>
+            <button type="button" data-clear-settings>清除连接</button>
+          </div>
         </fieldset>
         <p class="settings-status" role="status" data-settings-status hidden></p>
-        <div class="dialog-actions"><button type="button" data-clear-settings>清除连接</button><button type="submit" class="primary">保存</button></div>
+        <div class="settings-actions"><button type="submit" class="primary">保存</button></div>
       </form>
     </section>
   </main>
-  <dialog class="settings-dialog" aria-labelledby="username-title" data-username-setup>
+  <dialog class="settings-dialog" aria-labelledby="setup-title" data-play-setup>
     <div class="dialog-header">
-      <h2 id="username-title">设置用户名</h2>
-      <form method="dialog"><button class="icon-button" aria-label="返回主界面">×</button></form>
-    </div>
-  </dialog>
-  <dialog class="settings-dialog" aria-labelledby="setup-title" data-model-setup>
-    <div class="dialog-header">
-      <h2 id="setup-title">设置模型连接</h2>
+      <h2 id="setup-title"></h2>
       <form method="dialog"><button class="icon-button" aria-label="关闭设置">×</button></form>
     </div>
   </dialog>
@@ -90,15 +88,13 @@ const menuToggle = element<HTMLButtonElement>(app, '[data-menu-toggle]');
 const menu = element<HTMLDialogElement>(app, '[data-menu]');
 const resumeButton = element<HTMLButtonElement>(menu, '[data-resume]');
 const settingsScene = element(app, '[data-settings-scene]');
-const usernameSetup = element<HTMLDialogElement>(app, '[data-username-setup]');
-const usernameForm = element<HTMLFormElement>(settingsScene, '[data-username-form]');
-const usernameInput = element<HTMLTextAreaElement>(usernameForm, '[data-username]');
-const usernameStatus = element(usernameForm, '[data-username-status]');
-const submitUsername = element<HTMLButtonElement>(usernameForm, 'button[type="submit"]');
-const modelSetup = element<HTMLDialogElement>(app, '[data-model-setup]');
+const playSetup = element<HTMLDialogElement>(app, '[data-play-setup]');
+const setupTitle = element(playSetup, '#setup-title');
 const settingsBack = element<HTMLAnchorElement>(settingsScene, '[data-settings-back]');
 const settingsForm = element<HTMLFormElement>(settingsScene, '[data-settings-form]');
-const settingsFields = element<HTMLFieldSetElement>(settingsForm, 'fieldset');
+const usernameFields = element<HTMLFieldSetElement>(settingsForm, '[data-username-fields]');
+const usernameInput = element<HTMLInputElement>(settingsForm, '[data-username]');
+const modelFields = element<HTMLFieldSetElement>(settingsForm, '[data-model-fields]');
 const protocolInput = element<HTMLSelectElement>(settingsForm, '[data-protocol]');
 const addressInput = element<HTMLInputElement>(settingsForm, '[data-base-url]');
 const modelInput = element<HTMLInputElement>(settingsForm, '[data-model-id]');
@@ -109,6 +105,7 @@ const effortInput = element<HTMLInputElement>(settingsForm, '[data-effort]');
 const effortPicker = editableCombobox(effortInput, element(settingsForm, '#effort-options'));
 const keyInput = element<HTMLInputElement>(settingsForm, '[data-api-key]');
 const settingsStatus = element(settingsForm, '[data-settings-status]');
+const clearConnection = element(settingsForm, '[data-clear-connection]');
 const clearSettings = element<HTMLButtonElement>(settingsForm, '[data-clear-settings]');
 const submitSettings = element<HTMLButtonElement>(settingsForm, 'button[type="submit"]');
 
@@ -125,10 +122,8 @@ const editorWrites = new Map<string, Promise<void>>();
 let orderWrite: Promise<void> | undefined;
 let latestSave = 0;
 let username = '';
-let usernameSetupRoute = '';
+let setupRoute = '';
 let model: ModelSettings | null = null;
-let modelKnown = false;
-let firstPlayChecked = false;
 let activeRun: ReturnType<typeof mountRun> | undefined;
 const conversations = new Map<string, Conversation>();
 let initialized = false;
@@ -138,6 +133,7 @@ let settingsRequest = 0;
 let modelListRequest: AbortController | undefined;
 let modelsLoaded = false;
 let saving = false;
+const defaultProtocol = 'OpenAIResponses';
 
 function disposeScene() {
   activeRun?.dispose();
@@ -176,12 +172,7 @@ async function renderRoute() {
     if (request !== routeRequest || route !== (location.hash || '#/')) return;
   }
   menu.close();
-  if (usernameSetup.open && usernameSetupRoute !== route) closeUsernameSetup();
-  if (modelSetup.open) {
-    modelSetup.close();
-    settingsScene.append(settingsForm);
-    resetModelList();
-  }
+  if (setupRoute && setupRoute !== route) closePlaySetup();
   menuToggle.hidden = true;
   brand.hidden = isEditor;
   if (route === '#/settings') {
@@ -192,15 +183,16 @@ async function renderRoute() {
     backdrop.hidden = false;
     syncPause();
     settingsMessage('');
-    usernameMessage('');
     usernameInput.value = username;
     fillSettings();
     window.scrollTo(0, 0);
-    void loadSettings(true);
+    if (!saving) void refreshSettings();
     return;
   }
   if (!settingsScene.hidden) {
     settingsScene.hidden = true;
+    settingsRequest++;
+    lockSettings(saving);
     workspace.hidden = false;
     keyInput.value = '';
     resetModelList();
@@ -214,19 +206,12 @@ async function renderRoute() {
   }
 
   const entry = library.find((level) => level.id === id);
-  if (isPlay && entry && !playableError(entry.level) && !username) {
+  if (isPlay && entry && !playableError(entry.level) && (!username || !model)) {
     disposeScene();
     mountedRoute = '';
     workspace.replaceChildren();
     backdrop.hidden = false;
-    if (!usernameSetup.open) {
-      usernameSetupRoute = route;
-      usernameInput.value = '';
-      usernameMessage('');
-      usernameSetup.append(usernameForm);
-      usernameSetup.showModal();
-      usernameInput.focus();
-    }
+    if (!playSetup.open) openPlaySetup(route);
     return;
   }
 
@@ -253,10 +238,6 @@ async function renderRoute() {
     }
   }
   window.scrollTo(0, 0);
-  if (isPlay && activeRun) {
-    if (modelKnown) maybeOpenModelSetup();
-    else void loadSettings(false);
-  }
 }
 
 async function saveLevelOrder(ids: string[]) {
@@ -327,20 +308,21 @@ function renderRun(entry: LevelEntry, next?: LevelEntry) {
 }
 
 function syncPause() {
-  activeRun?.setPaused(menu.open || modelSetup.open || !settingsScene.hidden);
+  activeRun?.setPaused(menu.open || !settingsScene.hidden);
 }
 
-function maybeOpenModelSetup() {
-  if (firstPlayChecked || !modelKnown || !activeRun || !mountedRoute.startsWith('#/play') || !settingsScene.hidden) return;
-  firstPlayChecked = true;
-  if (model) return;
-  menu.close();
+function openPlaySetup(route: string) {
+  setupRoute = route;
+  usernameFields.hidden = Boolean(username);
+  modelFields.hidden = Boolean(model);
+  setupTitle.textContent = username ? '设置模型连接' : model ? '设置用户名' : '设置用户名和模型连接';
+  usernameInput.value = username;
   settingsMessage('');
   fillSettings();
-  if (!saving) lockSettings(false);
-  modelSetup.append(settingsForm);
-  modelSetup.showModal();
-  syncPause();
+  lockSettings(saving);
+  playSetup.append(settingsForm);
+  playSetup.showModal();
+  if (!username) usernameInput.focus();
 }
 
 function openMenu() {
@@ -358,16 +340,14 @@ function applySettings(next: Awaited<ReturnType<typeof readSettings>>, reset = f
   if (changed || reset) activeRun?.onSettingsChange(model, username);
 }
 
-function closeUsernameSetup() {
-  usernameSetupRoute = '';
-  usernameSetup.close();
-  settingsScene.insertBefore(usernameForm, settingsForm.parentElement === settingsScene ? settingsForm : null);
-}
-
-function usernameMessage(text: string, error = false) {
-  usernameStatus.textContent = text;
-  usernameStatus.hidden = !text;
-  usernameStatus.classList.toggle('invalid', error);
+function closePlaySetup() {
+  setupRoute = '';
+  playSetup.close();
+  settingsScene.append(settingsForm);
+  usernameFields.hidden = modelFields.hidden = false;
+  lockSettings(saving);
+  keyInput.value = '';
+  resetModelList();
 }
 
 function settingsMessage(text: string, error = false) {
@@ -427,7 +407,7 @@ async function loadModelOptions() {
 }
 
 function fillSettings() {
-  const api = model?.api ?? 'OpenAIResponses';
+  const api = model?.api ?? defaultProtocol;
   protocolInput.value = api;
   addressInput.value = model?.baseURL ?? protocols[api].baseURL;
   addressInput.placeholder = protocols[api].baseURL;
@@ -435,7 +415,7 @@ function fillSettings() {
   contextInput.value = String((model?.maxInputToken ?? defaultMaxInputToken) / 1000);
   effortPicker.setValue(model?.reasoningEffort ?? '');
   keyInput.value = '';
-  clearSettings.hidden = !model;
+  clearConnection.hidden = !model;
   updateKeyHint();
   resetModelList();
 }
@@ -445,85 +425,61 @@ function lockSettings(locked: boolean) {
     modelPicker.close();
     effortPicker.close();
   }
-  settingsFields.disabled = submitSettings.disabled = clearSettings.disabled = locked;
+  usernameFields.disabled = locked || usernameFields.hidden;
+  modelFields.disabled = locked || modelFields.hidden;
+  submitSettings.disabled = locked;
 }
 
-async function loadSettings(inScene: boolean) {
+async function refreshSettings() {
   const request = ++settingsRequest;
-  if (inScene) lockSettings(true);
+  lockSettings(true);
   try {
     const next = await readSettings(AbortSignal.timeout(5000));
     if (request !== settingsRequest) return;
-    const refreshUsername = usernameInput.value === username;
-    modelKnown = true;
     applySettings(next);
-    maybeOpenModelSetup();
-    if (inScene && !settingsScene.hidden) {
-      if (refreshUsername) usernameInput.value = username;
+    if (!settingsScene.hidden) {
+      usernameInput.value = username;
       fillSettings();
     }
   } catch {
-    if (request === settingsRequest && inScene) settingsMessage('无法读取模型设置', true);
+    if (request === settingsRequest && !settingsScene.hidden) settingsMessage('无法读取设置', true);
   } finally {
-    if (request === settingsRequest && inScene) lockSettings(false);
+    if (request === settingsRequest) lockSettings(false);
   }
 }
 
-async function commitSettings(update: Parameters<typeof saveSettings>[0]) {
+async function commitSettings(update: SettingsUpdate) {
   if (saving) return;
-  const writingUsername = update.username !== undefined;
-  const showMessage = writingUsername ? usernameMessage : settingsMessage;
+  const route = setupRoute;
   saving = true;
   settingsRequest++;
   lockSettings(true);
-  usernameInput.disabled = submitUsername.disabled = true;
-  showMessage('');
+  settingsMessage('');
   try {
-    applySettings(await saveSettings(update, AbortSignal.timeout(10000)), !writingUsername);
-    modelKnown = true;
-    if (writingUsername) {
-      showMessage('用户名已保存');
-      if (usernameSetup.open) {
-        closeUsernameSetup();
-        void renderRoute();
-      }
-    } else {
+    applySettings(await saveSettings(update, AbortSignal.timeout(10000)), update.model !== undefined);
+    if (route && setupRoute === route && playSetup.open && location.hash === route) {
+      closePlaySetup();
+      void renderRoute();
+    } else if (!settingsScene.hidden) {
+      if (update.model !== null) usernameInput.value = username;
       fillSettings();
-      showMessage(update.model ? '设置已保存' : '已清除模型连接');
-      if (update.model && modelSetup.open) modelSetup.close();
+      settingsMessage(update.model === null ? '已清除模型连接' : '设置已保存');
     }
   } catch (error) {
-    showMessage(error instanceof Error && error.name !== 'TimeoutError' ? error.message : '保存设置超时', true);
+    settingsMessage(error instanceof Error && error.name !== 'TimeoutError' ? error.message : '保存设置超时', true);
   } finally {
     saving = false;
     lockSettings(false);
-    usernameInput.disabled = submitUsername.disabled = false;
   }
 }
 
 menuToggle.addEventListener('click', openMenu);
 menu.addEventListener('close', syncPause);
-usernameSetup.addEventListener('close', () => {
-  if (usernameSetup.open || !usernameSetupRoute) return;
-  const route = usernameSetupRoute;
-  closeUsernameSetup();
+playSetup.addEventListener('close', () => {
+  if (playSetup.open || !setupRoute) return;
+  const route = setupRoute;
+  closePlaySetup();
   if (location.hash === route) location.hash = '#/';
-});
-usernameForm.addEventListener('submit', (event) => {
-  event.preventDefault();
-  const value = usernameInput.value;
-  if (Array.from(value).length > 20) {
-    usernameMessage('用户名最多 20 个字符', true);
-    return;
-  }
-  if (value) void commitSettings({ username: value });
-});
-modelSetup.addEventListener('close', () => {
-  if (modelSetup.open || settingsForm.parentElement !== modelSetup) return;
-  settingsScene.append(settingsForm);
-  keyInput.value = '';
-  resetModelList();
-  syncPause();
 });
 resumeButton.addEventListener('click', () => menu.close());
 window.addEventListener('keydown', (event) => {
@@ -549,15 +505,38 @@ modelInput.addEventListener('focus', loadModelOptions);
 modelInput.addEventListener('click', loadModelOptions);
 settingsForm.addEventListener('submit', (event) => {
   event.preventDefault();
+  const update: SettingsUpdate = {};
+  const name = usernameInput.value;
+  const displayedUsername = username.replace(/[\r\n]/g, '');
+  if (!usernameFields.hidden && name !== displayedUsername) update.username = name;
+  const connection = modelConnection();
+  const modelID = modelInput.value.trim();
   const maxInputToken = Math.round(contextInput.valueAsNumber * 1000);
   const reasoningEffort = effortInput.value.trim();
-  if (!Number.isSafeInteger(maxInputToken) || maxInputToken <= 0) {
-    settingsMessage('上下文长度超出范围', true);
+  const validateModel = !modelFields.hidden && Boolean(setupRoute || model || modelID || connection.apiKey ||
+    connection.api !== defaultProtocol || connection.baseURL !== protocols[defaultProtocol].baseURL ||
+    maxInputToken !== defaultMaxInputToken || reasoningEffort);
+  usernameInput.required = Boolean(setupRoute || displayedUsername);
+  modelInput.required = validateModel;
+  if (!settingsForm.reportValidity()) return;
+  if (update.username !== undefined && Array.from(name).length > 20) {
+    settingsMessage('用户名最多 20 个字符', true);
+    usernameInput.focus();
     return;
   }
-  void commitSettings({ model: {
-    ...modelConnection(), model: modelInput.value.trim(), maxInputToken, reasoningEffort,
-  } });
+  if (validateModel) {
+    if (!Number.isSafeInteger(maxInputToken) || maxInputToken <= 0) {
+      settingsMessage('上下文长度超出范围', true);
+      contextInput.focus();
+      return;
+    }
+    if (connection.apiKey || connection.api !== model?.api || connection.baseURL !== model.baseURL ||
+        modelID !== model.model || maxInputToken !== model.maxInputToken || reasoningEffort !== model.reasoningEffort) {
+      update.model = { ...connection, model: modelID, maxInputToken, reasoningEffort };
+    }
+  }
+  if (update.username !== undefined || update.model !== undefined) void commitSettings(update);
+  else settingsMessage('没有需要保存的更改');
 });
 clearSettings.addEventListener('click', () => { void commitSettings({ model: null }); });
 window.addEventListener('hashchange', () => { void renderRoute(); });
@@ -565,7 +544,10 @@ window.addEventListener('hashchange', () => { void renderRoute(); });
 async function initialize() {
   workspace.innerHTML = '<p class="muted" role="status">正在读取本地关卡和进度…</p>';
   try {
-    const [catalog, saved] = await Promise.all([readCatalog(), readProgress(), loadSettings(false)]);
+    const [catalog, saved, settings] = await Promise.all([
+      readCatalog(), readProgress(), readSettings(AbortSignal.timeout(5000)),
+    ]);
+    applySettings(settings);
     library = catalog.levels;
     warnings = catalog.warnings ?? [];
     progress = saved;
