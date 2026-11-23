@@ -8,6 +8,8 @@ import { captureScene, drawScene } from '../render/scene.ts';
 import type { ProgressUpdate, SavedRun } from '../storage/game.ts';
 import { element, formatDuration } from './elements.ts';
 
+const resultDelayMS = 5000;
+
 type RunOptions = {
   level: LevelDefinition;
   model: ModelSettings | null;
@@ -27,6 +29,11 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   const { editor, conversation } = options;
   root.innerHTML = `
     <div class="run-layout">
+      ${editor ? '' : `
+        <nav class="play-navigation" aria-label="关卡导航">
+          <a class="scene-action" href="#/">← 返回主界面</a>
+          <a class="scene-action primary" data-play-next hidden>下一关 →</a>
+        </nav>`}
       <aside class="panel run-sidebar">
         <div class="sidebar-header"><h2>与 Vibe 对话</h2><button class="text-button" type="button" data-clear-chat disabled>清空历史</button></div>
         <div class="messages" id="vibe-chat-history" role="log" aria-label="对话与工具事件" data-messages></div>
@@ -68,6 +75,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
         <p class="invalid" data-result-error role="status" hidden></p>
         <nav class="dialog-actions" aria-label="通关后操作">
           <a class="scene-action" href="#/">返回首页</a>
+          <button type="button" data-stay>再待一会</button>
           <a class="scene-action primary" data-next-level hidden>下一关</a>
         </nav>
       </dialog>` : ''}`;
@@ -95,10 +103,17 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   const gameOver = element(root, '[data-game-over]');
   const retryRun = element<HTMLButtonElement>(gameOver, '[data-retry-run]');
   const result = root.querySelector<HTMLDialogElement>('[data-level-result]');
-  if (result && options.nextLevel) {
-    const next = element<HTMLAnchorElement>(result, '[data-next-level]');
-    next.href = options.nextLevel;
-    next.hidden = false;
+  const playNext = root.querySelector<HTMLAnchorElement>('[data-play-next]');
+  if (options.nextLevel) {
+    if (playNext) {
+      playNext.href = options.nextLevel;
+      playNext.hidden = !options.completedAt;
+    }
+    if (result) {
+      const next = element<HTMLAnchorElement>(result, '[data-next-level]');
+      next.href = options.nextLevel;
+      next.hidden = false;
+    }
   }
 
   let level = options.level;
@@ -106,6 +121,10 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   let username = options.username;
   const entries = new WeakMap<ChatEvent, HTMLElement>();
   let manual = false;
+  let paused = false;
+  let resultPending = false;
+  let resultReadyAt: number | undefined;
+  let resultTimer: number | undefined;
   let agent: Agent | undefined;
   let lastRecord = 0;
   let firstPromptAt = options.savedRun?.elapsedMS === undefined ? undefined : performance.now() - options.savedRun.elapsedMS;
@@ -116,16 +135,25 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   doneBadge.hidden = !options.completedAt;
   if (options.completedAt) doneBadge.title = new Date(options.completedAt).toLocaleString();
 
+  function canChat() {
+    const outcome = runtime.world.outcome;
+    return outcome === 'active' || (outcome === 'won' && result !== null && !resultPending);
+  }
+
   function refreshStatus() {
     const busy = agent?.busy ?? false;
-    const ended = runtime.world.outcome !== 'active';
-    send.disabled = !busy && (!agent || ended || manual || !input.value.trim());
+    const chat = canChat() && !manual;
+    const won = runtime.world.outcome === 'won';
+    send.disabled = !busy && (!agent || !chat || !input.value.trim());
     send.textContent = busy ? '中断' : '发送';
     connect.textContent = username ? '配置模型' : '设置用户名';
     connect.hidden = Boolean(model && username) || manual;
-    input.disabled = ended || manual;
+    input.disabled = !chat;
+    input.placeholder = won && chat ? '和 Vibe 聊聊…' : '告诉 Vibe 下一步怎么做…';
+    clearChat.hidden = won && result !== null;
     clearChat.disabled = conversation.events.length === 0;
-    status.textContent = manual ? '手动控制中' : busy ? 'Vibe 行动中' : ended ? '关卡已结束' : agent ? '等待指令' : '';
+    status.textContent = manual ? '手动控制中' : busy ? (won ? 'Vibe 回复中' : 'Vibe 行动中')
+      : !chat ? '关卡已结束' : agent ? (won ? '等待消息' : '等待指令') : '';
   }
 
   function refreshRecording() {
@@ -149,7 +177,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     const outcome = runtime.world.outcome;
     stageStatus.classList.toggle('success', outcome === 'won');
     stageStatus.classList.toggle('invalid', outcome === 'lost');
-    resetButton.hidden = outcome === 'lost';
+    resetButton.hidden = outcome === 'lost' || (outcome === 'won' && result !== null);
     resetButton.textContent = outcome === 'active' ? '重置关卡' : '重开关卡';
     gameOver.hidden = outcome !== 'lost';
     if (outcome === 'lost') stageStatus.textContent = '角色掉出地图，已死亡';
@@ -199,15 +227,34 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       retryRun.focus({ preventScroll: true });
       saveProgress({ run: null });
     } else if (outcome === 'won' && result) {
+      resultPending = true;
       doneBadge.hidden = false;
+      if (playNext?.hasAttribute('href')) playNext.hidden = false;
       const durationMS = elapsedTime();
       const time = element(result, '[data-result-duration]');
       time.hidden = durationMS === undefined;
       if (durationMS !== undefined) time.textContent = `通关耗时 · ${formatDuration(durationMS)}`;
       saveProgress({ run: null, won: true, durationMS });
-      result.showModal();
+      showResultWhenReady();
     }
     refreshRecording();
+    refreshStatus();
+  }
+
+  function showResultWhenReady() {
+    if (!result || !resultPending || agent?.busy) return;
+    resultReadyAt ??= performance.now() + resultDelayMS;
+    const remaining = resultReadyAt - performance.now();
+    if (remaining > 0) {
+      resultTimer ??= window.setTimeout(() => {
+        resultTimer = undefined;
+        showResultWhenReady();
+      }, Math.ceil(remaining));
+      return;
+    }
+    if (paused) return;
+    result.showModal();
+    resultPending = false;
     refreshStatus();
   }
 
@@ -228,7 +275,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
 
   function replaceAgent() {
     stopAgent();
-    if (!model || !username || runtime.world.outcome !== 'active') return;
+    const outcome = runtime.world.outcome;
+    if (!model || !username || (outcome !== 'active' && !(outcome === 'won' && result))) return;
     agent = new Agent(model, defaultPrompt, {
       whenActive: (requestSignal) => runtime.whenActive(requestSignal),
       readScreen: () => captureScene(runtime.world.snapshot()),
@@ -242,6 +290,10 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
 
   function reset() {
     if (runtime.world.outcome === 'lost') conversation.pendingSystemInfo = respawnInfo;
+    resultPending = false;
+    resultReadyAt = undefined;
+    window.clearTimeout(resultTimer);
+    resultTimer = undefined;
     firstPromptAt = undefined;
     runtime.reset(level, manual);
     replaceAgent();
@@ -331,6 +383,12 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
 
   resetButton.addEventListener('click', restart, { signal });
   retryRun.addEventListener('click', restart, { signal });
+  if (result) {
+    element(result, '[data-stay]').addEventListener('click', () => result.close(), { signal });
+    result.addEventListener('close', () => {
+      if (!paused && runtime.world.outcome === 'won') input.focus({ preventScroll: true });
+    }, { signal });
+  }
   manualSwitch?.addEventListener('change', () => {
     manual = manualSwitch.checked;
     if (manual) {
@@ -353,6 +411,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     delete conversation.interrupted;
     input.value = '';
     showEmptyChat();
+    showResultWhenReady();
     refreshStatus();
   }, { signal });
 
@@ -381,6 +440,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     await current.send(text, level.systemPrompt ?? defaultPrompt);
     if (!signal.aborted && current === agent) {
       checkpoint(true);
+      showResultWhenReady();
       refreshStatus();
     }
   }, { signal });
@@ -417,16 +477,23 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       model = next;
       username = nextUsername;
       replaceAgent();
+      showResultWhenReady();
       refreshStatus();
     },
-    setPaused(paused: boolean) {
+    setPaused(nextPaused: boolean) {
+      paused = nextPaused;
       runtime.setPaused(paused);
       if (paused) refreshRecording();
-      else if (manual) canvas.focus();
+      else {
+        if (manual) canvas.focus();
+        showResultWhenReady();
+        refreshStatus();
+      }
     },
     dispose() {
       checkpoint(true);
       window.clearInterval(checkpointTimer);
+      window.clearTimeout(resultTimer);
       result?.close();
       chatResize.disconnect();
       events.abort();

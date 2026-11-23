@@ -34,6 +34,8 @@ export const respawnInfo = '<system-info>你刚刚坠入虚空，一阵眩晕之
 
 const interruptionInfo = '<system-info>{{user}} 刚刚中断了你的行动，以下是 ta 的新指示</system-info>';
 
+const wonInfo = '<system-info>红色按钮已经踩下，关卡已通关。你的角色停在通关位置，可以查看画面并继续和玩家交谈。此时无法执行动作。</system-info>';
+
 function personalize(text: string, username: string) {
   return text.replaceAll('{{user}}', () => username);
 }
@@ -154,13 +156,14 @@ export class Agent {
     };
 
     const threshold = this.model.maxInputToken ?? defaultMaxInputToken;
-    const usageKey = JSON.stringify([protocol, this.model.baseURL, this.model.model, this.model.reasoningEffort, prompt]);
     let compressionFailed = false;
     try {
       while (true) {
         await this.tools.whenActive(signal);
         signal.throwIfAborted();
-        let estimate = estimateContext(prompt, history);
+        const requestPrompt = this.tools.outcome() === 'won' ? `${prompt}\n\n${wonInfo}` : prompt;
+        const usageKey = JSON.stringify([protocol, this.model.baseURL, this.model.model, this.model.reasoningEffort, requestPrompt]);
+        let estimate = estimateContext(requestPrompt, history);
         const usage = conversation.usage;
         const inputTokens = usage?.key === usageKey ? usage.tokens + estimate - usage.estimate : estimate;
         const currentIndex = history.indexOf(userMessage);
@@ -176,14 +179,14 @@ export class Agent {
             else history.splice(0, history.length, entry, userMessage);
             conversation.summary = entry;
             delete conversation.usage;
-            estimate = estimateContext(prompt, history);
+            estimate = estimateContext(requestPrompt, history);
           } catch (error) {
             signal.throwIfAborted();
             compressionFailed = true;
             this.emit({ kind: 'error', text: `无法压缩对话上下文：${message(error)}` });
           }
         }
-        const reply = await this.generate(prompt, history, true, signal, onDelta);
+        const reply = await this.generate(requestPrompt, history, true, signal, onDelta);
         signal.throwIfAborted();
         if (reply.inputTokens) conversation.usage = { key: usageKey, estimate, tokens: reply.inputTokens };
         if (!output.some((event) => event.kind === 'assistant')) onDelta('assistant', reply.text);

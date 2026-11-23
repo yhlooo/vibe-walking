@@ -5,13 +5,23 @@
     "definition": "01-walk-to-red-button.json"
   },
   {
+    "id": "slippery-floor",
+    "name": "02 小心地滑",
+    "definition": "02-slippery-floor.json"
+  },
+  {
     "id": "midair-jump",
-    "name": "02 悬空起跳",
-    "definition": "02-midair-jump.json"
+    "name": "03 悬空起跳",
+    "definition": "03-midair-jump.json"
+  },
+  {
+    "id": "all-roads-lead-to-rome",
+    "name": "04 条条大路通罗马",
+    "definition": "04-all-roads-lead-to-rome.json"
   },
   {
     "id": "trust",
-    "name": "03 信任",
-    "definition": "03-trust.json"
+    "name": "05 信任",
+    "definition": "05-trust.json"
   }
 ]

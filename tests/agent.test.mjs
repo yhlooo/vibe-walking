@@ -140,7 +140,13 @@ for (const protocol of Object.keys(protocols)) {
       assert.equal(url, protocols[protocol].path);
       assert.equal(request.headers.Authorization, undefined);
       const body = JSON.parse(request.body);
-      assert.equal(body.instructions ?? body.system ?? body.messages[0].content, prompt);
+      const requestPrompt = body.instructions ?? body.system ?? body.messages[0].content;
+      if (world.outcome === 'won') {
+        assert.ok(requestPrompt.startsWith(prompt));
+        assert.match(requestPrompt, /关卡已通关.*无法执行动作/);
+      } else {
+        assert.equal(requestPrompt, prompt);
+      }
       assert.equal(body.stream, true);
       requests.push(body);
       return streamedFixture(protocol, requests.length - 1);

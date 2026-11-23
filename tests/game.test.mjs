@@ -103,7 +103,7 @@ test('the roof stops jumps and reversed gravity while the bottom remains open', 
 });
 
 test('all three map presets round-trip with a supported goal and a valid spawn', () => {
-  const builtIn = readLevel(JSON.parse(readFileSync(new URL('../levels/definitions/03-trust.json', import.meta.url))));
+  const builtIn = readLevel(JSON.parse(readFileSync(new URL('../levels/definitions/05-trust.json', import.meta.url))));
   assert.deepEqual(gridSize(builtIn.tiles), { rows: 10, columns: 15 });
   for (const { rows, columns } of gridSizes) {
     const board = resizeLevel(builtIn, rows, columns);

@@ -44,8 +44,8 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 		return reply
 	}
 	catalog := gameResponse[levels.Catalog](t, request("GET", "levels", nil, 200))
-	builtInIDs := []string{"walk-to-red-button", "midair-jump", "trust"}
-	builtInNames := []string{"01 走到红色按钮", "02 悬空起跳", "03 信任"}
+	builtInIDs := []string{"walk-to-red-button", "slippery-floor", "midair-jump", "all-roads-lead-to-rome", "trust"}
+	builtInNames := []string{"01 走到红色按钮", "02 小心地滑", "03 悬空起跳", "04 条条大路通罗马", "05 信任"}
 	if len(catalog.Levels) != len(builtInIDs) {
 		t.Fatalf("unexpected built-in order: %+v", catalog)
 	}

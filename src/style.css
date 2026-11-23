@@ -96,6 +96,8 @@ h2 { font-size: 15px; font-weight: 730; }
 .panel { border: 1px solid var(--border); border-radius: 12px; background: var(--panel); overflow: hidden; min-width: 0; }
 .run-layout, .editor-layout { display: grid; gap: 14px; }
 .run-layout { grid-template-columns: clamp(245px, 17vw, 360px) minmax(0, 1502px); justify-content: center; }
+.play-navigation { grid-row: 1; grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 12px; }
+.play-navigation .scene-action { padding-inline: 12px; }
 .editor-layout { grid-template-columns: minmax(0, 1fr) clamp(176px, 16vw, 240px); align-items: start; }
 .editor-layout .run-layout { grid-template-columns: clamp(220px, 17vw, 360px) minmax(0, 1502px); }
 .run-title { padding: 14px 16px; }
@@ -221,7 +223,6 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .scene-action:hover { background: #392d4c; border-color: #a68dc7; }
 .scene-action.primary { background: var(--accent); border-color: transparent; color: #261943; font-weight: 800; }
 .scene-action.primary:hover { background: #e3ceff; }
-
 .scene-content { width: min(100%, 1120px); margin-inline: auto; padding-block: clamp(8px, 2vw, 28px) 24px; }
 .scene-back { display: inline-block; margin-bottom: 14px; color: #d6c4f4; font-size: 14px; }
 .scene-back:hover { text-decoration: underline; }
@@ -273,6 +274,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
   .run-layout, .editor-layout { grid-template-columns: minmax(0, 1fr); }
   .editor-play, .editor-play .run-layout { display: contents; }
   .run-layout .stage-panel { grid-row: 1; }
+  .play-navigation ~ .stage-panel { grid-row: 2; }
   .editor-layout .run-sidebar { grid-row: 3; }
   .editor-tools { grid-row: 2; }
   .run-sidebar { contain: none; height: clamp(340px, 67svh, 520px); }
@@ -297,6 +299,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .level-list[aria-busy] .level-drag { cursor: wait; }
 .level-result h2 { font-size: 24px; }
 .level-result p { margin-top: 8px; }
+.level-result .dialog-actions { flex-wrap: wrap; }
 .level-result a { padding-inline: 14px; }
 .settings-dialog .settings-form { padding: 0; margin: 0; border: 0; background: transparent; }
 .stage { position: relative; }
