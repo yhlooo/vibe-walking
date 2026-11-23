@@ -1,4 +1,4 @@
-import { gravityDirection, gridSize } from '../level/definition.ts';
+import { gridSize } from '../level/definition.ts';
 import type { Point } from '../level/definition.ts';
 import type { Snapshot } from '../game/world.ts';
 
@@ -52,7 +52,6 @@ export function drawScene(
     context.fill();
   }
 
-  const gravity = gravityDirection(level.gravity);
   for (const [y, row] of level.tiles.entries()) {
     for (let x = 0; x < row.length; x++) {
       if (row[x] === '#') {
@@ -60,9 +59,9 @@ export function drawScene(
         context.fillRect(x, y, 1, 1);
         context.fillStyle = '#29263e';
         context.fillRect(x + 0.025, y + 0.025, 0.95, 0.95);
-        if (level.tiles[y - gravity]?.[x] !== '#') {
+        if (level.tiles[y - 1]?.[x] !== '#') {
           context.fillStyle = '#72639c';
-          context.fillRect(x, gravity > 0 ? y : y + 0.94, 1, 0.06);
+          context.fillRect(x, y, 1, 0.06);
         }
       }
     }
@@ -80,7 +79,7 @@ export function drawScene(
     if (x < 0) continue;
     const pressed = outcome === 'won';
     const protrusion = pressed ? 0.06 : 0.15;
-    const top = gravity > 0 ? y + 1 - protrusion : y;
+    const top = y + 1 - protrusion;
     context.fillStyle = pressed ? '#ff536d' : '#f03559';
     context.fillRect(x, top, 1, protrusion);
     context.fillStyle = '#ffa3af';

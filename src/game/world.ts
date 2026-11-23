@@ -87,9 +87,11 @@ export class World {
   step(input: StepInput = idleInput): number {
     if (this.outcome !== 'active') return 0;
     const gravity = gravityDirection(this.level.gravity);
-    if (input.jump && this.canJump) {
+    const zeroGravity = this.level.gravity === 0;
+    const jumpDirection = zeroGravity && input.jump ? this.zeroGravityJumpDirection() : undefined;
+    if (input.jump && (this.canJump || jumpDirection !== undefined)) {
       this.canJump = false;
-      this.velocityY = -gravity * jumpSpeed;
+      this.velocityY = (jumpDirection ?? -gravity) * jumpSpeed;
     }
     const remaining = this.moveHorizontally(input);
     this.velocityY = Math.max(-20, Math.min(20, this.velocityY + (16 * this.level.gravity * stepSeconds)));
@@ -98,8 +100,7 @@ export class World {
     if (Math.abs(y - (this.player.y + dy)) > epsilon) this.velocityY = 0;
     this.player.y = y;
 
-    const support = (gravity < 0 && y === 0) || this.solids.some((solid) =>
-      overlaps(this.player.x, solid.x) && Math.abs(y - (solid.y - gravity)) < epsilon);
+    const support = (gravity < 0 && y === 0) || this.touchesSolid('y', gravity);
     if (support && this.velocityY * gravity >= 0) {
       this.canJump = true;
       this.velocityY = 0;
@@ -108,8 +109,22 @@ export class World {
         this.outcome = 'won';
       }
     }
+    if (zeroGravity && !this.canJump && this.zeroGravityJumpDirection() !== undefined) this.canJump = true;
     if (y >= this.size.rows) this.outcome = 'lost';
     return remaining;
+  }
+
+  private zeroGravityJumpDirection(): -1 | 1 | undefined {
+    if (this.touchesSolid('y', 1)) return -1;
+    if (this.player.y < epsilon || this.touchesSolid('y', -1)) return 1;
+    if (this.player.x < epsilon || this.touchesSolid('x', -1)) return -1;
+    if (this.size.columns - 1 - this.player.x < epsilon || this.touchesSolid('x', 1)) return 1;
+  }
+
+  private touchesSolid(axis: 'x' | 'y', direction: -1 | 1): boolean {
+    const across = axis === 'x' ? 'y' : 'x';
+    return this.solids.some((solid) =>
+      Math.abs(this.player[axis] + direction - solid[axis]) < epsilon && overlaps(this.player[across], solid[across]));
   }
 
   private moveHorizontally({ direction, distance }: StepInput): number {

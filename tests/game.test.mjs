@@ -6,6 +6,7 @@ import { Runtime } from '../src/game/runtime.ts';
 import { idleInput, World } from '../src/game/world.ts';
 import { gridSize, gridSizes, playableError, readLevel, resizeLevel } from '../src/level/definition.ts';
 import { exportLevel, importLevel } from '../src/level/json.ts';
+import { drawScene } from '../src/render/scene.ts';
 
 const firstLevel = readLevel(JSON.parse(readFileSync(new URL('./fixtures/legacy-level.json', import.meta.url))));
 const right = { direction: 1, jump: false };
@@ -100,6 +101,117 @@ test('the roof stops jumps and reversed gravity while the bottom remains open', 
   assert.equal(inverted.snapshot().player.y, 0);
   inverted.step({ ...idleInput, jump: true });
   assert.ok(inverted.snapshot().player.y > 0);
+});
+
+function zeroGravityLevel(blocks, spawn = { x: 5, y: 4 }) {
+  const tiles = firstLevel.tiles.map((row, y) =>
+    Array.from(row, (_, x) => blocks.some(([dx, dy]) => x === spawn.x + dx && y === spawn.y + dy) ? '#' : '.').join(''));
+  return { ...firstLevel, tiles, spawn, gravity: 0 };
+}
+
+test('zero-gravity jumps use solids in down, up, left, right priority order', () => {
+  for (const [blocks, dy] of [
+    [[], -1],
+    [[[0, 1]], -1],
+    [[[0, -1]], 1],
+    [[[-1, 0]], -1],
+    [[[1, 0]], 1],
+    [[[0, 1], [1, 0]], -1],
+    [[[0, -1], [-1, 0]], 1],
+    [[[-1, 0], [1, 0]], -1],
+    [[[0, 1], [0, -1]], 0],
+    [[[-1, -1], [1, 1]], -1],
+  ]) {
+    const world = new World(zeroGravityLevel(blocks));
+    runActions(world, { key: 'jump' });
+    const { x, y } = world.snapshot().player;
+    near(x, 5);
+    near(y, 4 + dy * Math.sqrt(48) / 100);
+  }
+});
+
+test('zero-gravity jumps also use the side walls and roof as supports', () => {
+  const { columns, rows } = gridSize(firstLevel.tiles);
+  for (const [x, y, blocks, dy] of [
+    [0, 4, [], -1],
+    [columns - 1, 4, [], 1],
+    [5, 0, [], 1],
+    [0, 0, [], 1],
+    [columns - 1, 0, [], 1],
+    [columns - 1, 4, [[0, 1]], -1],
+    [0, 4, [[0, -1]], 1],
+    [5, rows - 1, [], -1],
+  ]) {
+    const world = new World(zeroGravityLevel(blocks, { x, y }));
+    runActions(world, { key: 'jump' });
+    const { player } = world.snapshot();
+    near(player.x, x);
+    near(player.y, y + dy * Math.sqrt(48) / 100);
+  }
+});
+
+test('a downward jump from right support continues until the next support restores jumping', () => {
+  const level = { ...zeroGravityLevel([[1, 0], [0, 3]]), inertia: 0 };
+  const world = new World(level);
+  const jump = { ...idleInput, jump: true };
+  world.step({ ...jump, direction: -1 });
+  const { x } = world.snapshot().player;
+  near(x, 5 - 0.0004);
+  near(world.snapshot().player.y, 4 + Math.sqrt(48) / 100);
+  const restored = new World(level, JSON.parse(JSON.stringify(world.save())));
+  for (const state of [world, restored]) {
+    assert.equal(state.save().canJump, false);
+    state.step(jump);
+    near(state.snapshot().player.x, x);
+    near(state.snapshot().player.y, 4 + 2 * Math.sqrt(48) / 100);
+    repeat(state, idleInput, 50);
+    near(state.snapshot().player.y, 6);
+    assert.equal(state.save().canJump, true);
+    state.step(jump);
+    near(state.snapshot().player.x, x);
+    near(state.snapshot().player.y, 6 - Math.sqrt(48) / 100);
+  }
+  assert.deepEqual(restored.save(), world.save());
+});
+
+test('zero gravity allows one upward jump after spawning unsupported or moving off a platform', () => {
+  const jump = { ...idleInput, jump: true };
+  for (const blocks of [[], [[0, 1]]]) {
+    const world = new World(zeroGravityLevel(blocks));
+    runActions(world, { key: 'moveRight', value: 2 });
+    near(world.snapshot().player.y, 4);
+    world.step(jump);
+    near(world.snapshot().player.y, 4 - Math.sqrt(48) / 100);
+    assert.equal(world.save().canJump, false);
+    repeat(world, idleInput, 60);
+    near(world.snapshot().player.y, 0);
+    assert.equal(world.save().canJump, true);
+    world.step(jump);
+    near(world.snapshot().player.y, Math.sqrt(48) / 100);
+    assert.equal(world.save().canJump, false);
+  }
+});
+
+test('scene orientation and button artwork stay the same under any gravity', () => {
+  const gradient = { addColorStop() {} };
+  function draw(gravity, outcome) {
+    const rectangles = [];
+    const context = {
+      setTransform() {}, createLinearGradient: () => gradient,
+      beginPath() {}, roundRect() {}, fill() {},
+      fillRect(...coordinates) { rectangles.push([this.fillStyle, ...coordinates]); },
+    };
+    const canvas = { style: { getPropertyValue() {}, setProperty() {} }, getContext: () => context };
+    drawScene(canvas, {
+      level: { ...firstLevel, gravity }, player: { ...firstLevel.spawn, facing: 1 }, outcome,
+    }, { pixelHeight: 512 });
+    return rectangles;
+  }
+  for (const outcome of ['active', 'won']) {
+    const original = draw(1, outcome);
+    assert.deepEqual(draw(-1, outcome), original);
+    assert.deepEqual(draw(0, outcome), original);
+  }
 });
 
 test('all three map presets round-trip with a supported goal and a valid spawn', () => {
