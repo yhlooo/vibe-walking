@@ -4,6 +4,7 @@ export const protocols = {
   OpenAIChatCompletions: { label: 'OpenAI Chat Completions', baseURL: 'https://api.openai.com/v1', path: '/llmproxies/chat/completions' },
   OpenAIResponses: { label: 'OpenAI Responses', baseURL: 'https://api.openai.com/v1', path: '/llmproxies/responses' },
   AnthropicMessages: { label: 'Anthropic Messages', baseURL: 'https://api.anthropic.com/v1', path: '/llmproxies/messages' },
+  OllamaChat: { label: 'Ollama Chat', baseURL: 'http://localhost:11434', path: '/llmproxies/api/chat' },
 };
 
 export type Protocol = keyof typeof protocols;
@@ -17,7 +18,8 @@ export type ModelSettings = {
   reasoningEffort: string;
 };
 type Settings = { username: string; model: ModelSettings | null };
-type ModelUpdate = Omit<ModelSettings, 'hasAPIKey'> & { apiKey?: string };
+type ModelConnection = Pick<ModelSettings, 'api' | 'baseURL'> & { apiKey?: string };
+type ModelUpdate = ModelConnection & Omit<ModelSettings, 'api' | 'baseURL' | 'hasAPIKey'>;
 export type SettingsUpdate = { username?: string; model?: ModelUpdate | null };
 
 function parseSettings(value: unknown): Settings {
@@ -56,4 +58,19 @@ export async function saveSettings(update: SettingsUpdate, signal?: AbortSignal)
     throw new Error(isRecord(error) && typeof error.message === 'string' ? error.message : '无法保存设置');
   }
   return parseSettings(value);
+}
+
+export async function listModels(connection: ModelConnection, signal: AbortSignal): Promise<string[]> {
+  const response = await fetch('/api/v1/models', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(connection), signal,
+  });
+  const value: unknown = await response.json();
+  if (!response.ok) {
+    const error = isRecord(value) && value.error;
+    throw new Error(isRecord(error) && typeof error.message === 'string' ? error.message : '无法读取模型列表');
+  }
+  if (isRecord(value) && Array.isArray(value.models) && value.models.every((id) => typeof id === 'string')) {
+    return value.models;
+  }
+  throw new Error('模型列表格式不正确');
 }

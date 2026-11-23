@@ -19,7 +19,7 @@ import (
 	"github.com/yhlooo/vibe-walking/pkg/config"
 )
 
-func TestSettingsAndThreeProxies(t *testing.T) {
+func TestSettingsAndModelProxies(t *testing.T) {
 	type received struct {
 		path, model, auth, key, version, cookie string
 	}
@@ -95,10 +95,10 @@ func TestSettingsAndThreeProxies(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := send(restarted, http.MethodGet, "/api/v1/settings", "")
-	if !strings.Contains(got.Body.String(), `"api":"AnthropicMessages"`) {
+	if !strings.Contains(got.Body.String(), `"api":"OllamaChat"`) {
 		t.Fatalf("configuration after restart: %s", got.Body)
 	}
-	sameEndpoint := `{"model":{"api":"AnthropicMessages","baseURL":"` + upstream.URL + `/gateway/v1/","model":"new-model"}}`
+	sameEndpoint := `{"model":{"api":"OllamaChat","baseURL":"` + upstream.URL + `/gateway/v1/","model":"new-model"}}`
 	if got := send(restarted, http.MethodPost, "/api/v1/settings", sameEndpoint); !strings.Contains(got.Body.String(), `"hasAPIKey":true`) {
 		t.Fatalf("same endpoint should retain the old API key: %s", got.Body)
 	}
@@ -210,14 +210,24 @@ func TestUsernameAndModelOptionsAreSavedIndependently(t *testing.T) {
 }
 
 func TestProxyFlushesEventsAndCancelsUpstream(t *testing.T) {
+	t.Run("SSE", func(t *testing.T) {
+		testProxyStream(t, config.OpenAIResponsesAPI, "/responses", "text/event-stream", "data: first\n")
+	})
+	t.Run("NDJSON", func(t *testing.T) {
+		testProxyStream(t, config.OllamaChatAPI, "/api/chat", "application/x-ndjson", "{\"done\":false}\n")
+	})
+}
+
+func testProxyStream(t *testing.T, protocol config.ModelAPIProtocol, path, mediaType, firstLine string) {
+	t.Helper()
 	stopped := make(chan struct{})
 	unblock := make(chan struct{})
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if accept := r.Header.Get("Accept"); accept != "text/event-stream" {
+		if accept := r.Header.Get("Accept"); accept != mediaType {
 			t.Errorf("upstream Accept = %q", accept)
 		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: first\n\n")
+		w.Header().Set("Content-Type", mediaType)
+		fmt.Fprint(w, firstLine)
 		if err := http.NewResponseController(w).Flush(); err != nil {
 			t.Errorf("flush upstream: %v", err)
 		}
@@ -234,7 +244,7 @@ func TestProxyFlushesEventsAndCancelsUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings := `{"model":{"api":"OpenAIResponses","baseURL":"` + upstream.URL + `","model":"fixture"}}`
+	settings := fmt.Sprintf(`{"model":{"api":%q,"baseURL":%q,"model":"fixture"}}`, protocol, upstream.URL)
 	if reply := send(handler, http.MethodPost, "/api/v1/settings", settings); reply.Code != http.StatusOK {
 		t.Fatalf("save model: %s", reply.Body)
 	}
@@ -242,7 +252,7 @@ func TestProxyFlushesEventsAndCancelsUpstream(t *testing.T) {
 	defer proxy.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxy.URL+"/llmproxies/responses", strings.NewReader(`{"stream":true}`))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxy.URL+"/llmproxies"+path, strings.NewReader(`{"stream":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +262,7 @@ func TestProxyFlushesEventsAndCancelsUpstream(t *testing.T) {
 	}
 	defer response.Body.Close()
 	line, err := bufio.NewReader(response.Body).ReadString('\n')
-	if err != nil || line != "data: first\n" {
+	if err != nil || line != firstLine {
 		t.Fatalf("first event before upstream ends: %q, %v", line, err)
 	}
 	cancel()

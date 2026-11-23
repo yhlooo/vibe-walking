@@ -22,6 +22,7 @@ var modelProxies = []modelProxy{
 	{config.OpenAIChatCompletionsAPI, "/chat/completions"},
 	{config.OpenAIResponsesAPI, "/responses"},
 	{config.AnthropicMessagesAPI, "/messages"},
+	{config.OllamaChatAPI, "/api/chat"},
 }
 
 func (s *service) proxy(proxy modelProxy) http.HandlerFunc {
@@ -60,16 +61,13 @@ func (s *service) proxy(proxy modelProxy) http.HandlerFunc {
 		upstream.Header.Set("Content-Type", "application/json")
 		var stream bool
 		if json.Unmarshal(body["stream"], &stream) == nil && stream {
-			upstream.Header.Set("Accept", "text/event-stream")
-		}
-		if proxy.protocol == config.AnthropicMessagesAPI {
-			upstream.Header.Set("anthropic-version", "2023-06-01")
-			if model.APIKey != "" {
-				upstream.Header.Set("x-api-key", model.APIKey)
+			mediaType := "text/event-stream"
+			if proxy.protocol == config.OllamaChatAPI {
+				mediaType = "application/x-ndjson"
 			}
-		} else if model.APIKey != "" {
-			upstream.Header.Set("Authorization", "Bearer "+model.APIKey)
+			upstream.Header.Set("Accept", mediaType)
 		}
+		setModelHeaders(upstream, model)
 
 		start := time.Now()
 		response, err := s.client.Do(upstream)
@@ -90,11 +88,23 @@ func (s *service) proxy(proxy modelProxy) http.HandlerFunc {
 			w.Header().Set("Content-Type", contentType)
 		}
 		w.WriteHeader(response.StatusCode)
-		if mediaType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type")); mediaType == "text/event-stream" {
+		mediaType, _, _ := mime.ParseMediaType(response.Header.Get("Content-Type"))
+		if mediaType == "text/event-stream" || mediaType == "application/x-ndjson" {
 			streamResponse(w, response.Body)
 			return
 		}
 		io.Copy(w, response.Body)
+	}
+}
+
+func setModelHeaders(request *http.Request, model config.ModelConfig) {
+	if model.Protocol == config.AnthropicMessagesAPI {
+		request.Header.Set("anthropic-version", "2023-06-01")
+		if model.APIKey != "" {
+			request.Header.Set("x-api-key", model.APIKey)
+		}
+	} else if model.APIKey != "" {
+		request.Header.Set("Authorization", "Bearer "+model.APIKey)
 	}
 }
 

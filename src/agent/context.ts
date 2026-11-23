@@ -5,6 +5,7 @@ export type ContextUsage = { key: string; estimate: number; tokens: number };
 function contextJSON(history: Item[], image: string): string {
   return JSON.stringify(history, (key, value: unknown) => {
     if (key === 'encrypted_content' || key === 'signature' || key === 'reasoning_content') return undefined;
+    if (key === 'images' && Array.isArray(value)) return value.map(() => image);
     if (typeof value === 'string' && (value.startsWith('data:image/') || key === 'data')) return image;
     return value;
   });

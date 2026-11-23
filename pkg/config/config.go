@@ -35,12 +35,13 @@ const (
 	OpenAIChatCompletionsAPI ModelAPIProtocol = "OpenAIChatCompletions"
 	OpenAIResponsesAPI       ModelAPIProtocol = "OpenAIResponses"
 	AnthropicMessagesAPI     ModelAPIProtocol = "AnthropicMessages"
+	OllamaChatAPI            ModelAPIProtocol = "OllamaChat"
 )
 
-// Normalize validates a configured model and canonicalizes its endpoint.
-func (m ModelConfig) Normalize() (ModelConfig, error) {
+// NormalizeConnection validates the settings shared by generation and model discovery.
+func (m ModelConfig) NormalizeConnection() (ModelConfig, error) {
 	switch m.Protocol {
-	case OpenAIChatCompletionsAPI, OpenAIResponsesAPI, AnthropicMessagesAPI:
+	case OpenAIChatCompletionsAPI, OpenAIResponsesAPI, AnthropicMessagesAPI, OllamaChatAPI:
 	default:
 		return ModelConfig{}, errors.New("请选择受支持的模型协议")
 	}
@@ -51,6 +52,19 @@ func (m ModelConfig) Normalize() (ModelConfig, error) {
 		return ModelConfig{}, errors.New("Base URL 必须是 HTTP(S) 地址，且不能包含凭据、查询参数或片段")
 	}
 	m.BaseURL = strings.TrimRight(parsed.String(), "/")
+	m.APIKey = strings.TrimSpace(m.APIKey)
+	if strings.ContainsAny(m.APIKey, "\r\n") {
+		return ModelConfig{}, errors.New("API Key 必须在同一行")
+	}
+	return m, nil
+}
+
+// Normalize validates a configured model and canonicalizes its endpoint.
+func (m ModelConfig) Normalize() (ModelConfig, error) {
+	m, err := m.NormalizeConnection()
+	if err != nil {
+		return ModelConfig{}, err
+	}
 	m.Model = strings.TrimSpace(m.Model)
 	if m.Model == "" {
 		return ModelConfig{}, errors.New("请输入模型 ID")
@@ -62,9 +76,5 @@ func (m ModelConfig) Normalize() (ModelConfig, error) {
 		m.MaxInputToken = DefaultMaxInputToken
 	}
 	m.ReasoningEffort = strings.TrimSpace(m.ReasoningEffort)
-	m.APIKey = strings.TrimSpace(m.APIKey)
-	if strings.ContainsAny(m.APIKey, "\r\n") {
-		return ModelConfig{}, errors.New("API Key 必须在同一行")
-	}
 	return m, nil
 }

@@ -128,9 +128,7 @@ func (s *service) updateSettings(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_settings", err.Error())
 			return
 		}
-		if update.APIKey == nil && model.Protocol == s.settings.Model.Protocol && model.BaseURL == s.settings.Model.BaseURL {
-			model.APIKey = s.settings.Model.APIKey
-		}
+		useSavedKey(&model, update.APIKey, s.settings.Model)
 		next.Model = model
 	}
 	if err := config.SaveConfig(r.Context(), &next, s.path); err != nil {
@@ -139,6 +137,12 @@ func (s *service) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	s.settings = next
 	writeJSON(w, http.StatusOK, summarize(next))
+}
+
+func useSavedKey(model *config.ModelConfig, key *string, saved config.ModelConfig) {
+	if key == nil && model.Protocol == saved.Protocol && model.BaseURL == saved.BaseURL {
+		model.APIKey = saved.APIKey
+	}
 }
 
 func decodeJSON(r io.Reader, dst any, strict bool) error {

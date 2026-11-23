@@ -186,10 +186,49 @@ const anthropicMessages: Adapter = {
   },
 };
 
+const ollamaChat: Adapter = {
+  request(settings, prompt, history, includeTools) {
+    const level = settings.reasoningEffort;
+    const think = level === 'true' ? true : level === 'false' || level === 'none' ? false : level;
+    return {
+      model: settings.model, messages: [{ role: 'system', content: prompt }, ...history], stream: true,
+      ...(level ? { think } : {}),
+      ...(includeTools ? { tools: functions.map((definition) => ({ type: 'function', function: definition })) } : {}),
+    };
+  },
+  read(value) {
+    const response = object(value);
+    if (response.done !== true || (response.done_reason && response.done_reason !== 'stop')) {
+      throw new Error('Ollama Chat 的响应未完成');
+    }
+    const message = object(response.message);
+    const calls = message.tool_calls == null ? [] : items(message.tool_calls);
+    const invocation = onlyCall(calls);
+    const fn = invocation && object(invocation.function);
+    const text = string(message.content);
+    return {
+      history: [{ role: 'assistant', ...message }], text,
+      call: fn && tool('ollama-tool-call', fn.name, fn.arguments, false),
+      inputTokens: tokens(response.prompt_eval_count),
+    };
+  },
+  result(call, result) {
+    const history: Item[] = [{ role: 'tool', tool_name: call.name, content: result.text }];
+    if (result.image) {
+      history.push({
+        role: 'user', content: '这是刚才 ReadScreen 工具返回的游戏画面。',
+        images: [result.image.slice('data:image/png;base64,'.length)],
+      });
+    }
+    return history;
+  },
+};
+
 export const adapters: Record<Protocol, Adapter> = {
   OpenAIChatCompletions: chatCompletions,
   OpenAIResponses: responses,
   AnthropicMessages: anthropicMessages,
+  OllamaChat: ollamaChat,
 };
 
 function effort(settings: ModelSettings) {
@@ -336,11 +375,44 @@ function anthropicStream(emit: EmitDelta): Accumulator {
   };
 }
 
+function ollamaStream(emit: EmitDelta): Accumulator {
+  const calls: Item[] = [];
+  let content = '';
+  let thinking = '';
+  let completed: Item | undefined;
+  let inputTokens: number | undefined;
+  return {
+    push(event) {
+      inputTokens = tokens(event.prompt_eval_count) ?? inputTokens;
+      if (isRecord(event.message)) {
+        const text = string(event.message.content);
+        const thought = string(event.message.thinking);
+        content += text;
+        thinking += thought;
+        if (thought) emit('thinking', thought);
+        if (text) emit('assistant', text);
+        if (event.message.tool_calls != null) calls.push(...items(event.message.tool_calls));
+      }
+      if (event.done === true) {
+        completed = event;
+        return true;
+      }
+    },
+    finish() {
+      return ollamaChat.read({
+        ...completed, prompt_eval_count: inputTokens,
+        message: { content, ...(thinking ? { thinking } : {}), ...(calls.length ? { tool_calls: calls } : {}) },
+      });
+    },
+  };
+}
+
 export function streamReply(protocol: Protocol, emit: EmitDelta): Accumulator {
   switch (protocol) {
     case 'OpenAIChatCompletions': return chatStream(emit);
     case 'OpenAIResponses': return responsesStream(emit);
     case 'AnthropicMessages': return anthropicStream(emit);
+    case 'OllamaChat': return ollamaStream(emit);
   }
 }
 

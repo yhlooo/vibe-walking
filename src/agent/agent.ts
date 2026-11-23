@@ -6,7 +6,7 @@ import { acceptStreamEvent, adapters, streamReply } from './protocols.ts';
 import type { OutputKind, ToolCall, ToolResult } from './protocols.ts';
 import { defaultMaxInputToken, protocols } from './settings.ts';
 import type { ModelSettings, Protocol } from './settings.ts';
-import { readEventStream } from './stream.ts';
+import { readModelStream } from './stream.ts';
 import type { Outcome, StepInput } from '../game/world.ts';
 
 export const defaultPrompt = `## 你是谁
@@ -262,7 +262,7 @@ export class Agent {
       if (!response.ok) throw new Error(await proxyError(response));
       const stream = streamReply(protocol, emit);
       resetTimer();
-      await readEventStream(response, (data) => acceptStreamEvent(stream, data), requestSignal, resetTimer);
+      await readModelStream(response, (data) => acceptStreamEvent(stream, data), requestSignal, resetTimer, protocol === 'OllamaChat');
       return stream.finish();
     } catch (error) {
       requestSignal.throwIfAborted();
@@ -324,6 +324,6 @@ async function proxyError(response: Response): Promise<string> {
   if (response.status === 429) return '模型接口已限流或额度不足';
   if (response.status === 502) return '无法连接上游模型接口';
   if (response.status === 504) return '上游模型请求超时';
-  if (response.status === 400 || response.status === 422) return '上游未接受模型请求，请检查模型支持的思考强度、截图和工具调用';
+  if (response.status === 400 || response.status === 422) return '上游未接受模型请求，请检查模型支持的思考长度、截图和工具调用';
   return `模型请求失败（HTTP ${response.status}）`;
 }

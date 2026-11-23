@@ -107,6 +107,7 @@ func newHandler(dataDir string, localOnly bool, logger logr.Logger) (http.Handle
 	}))
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/settings", guard.Handler(http.HandlerFunc(s.handleSettings)))
+	mux.Handle("/api/v1/models", guard.Handler(http.HandlerFunc(s.handleModels)))
 	mux.Handle("/api/v1/levels", guard.Handler(http.HandlerFunc(s.handleLevels)))
 	mux.Handle("/api/v1/levels/{id}", guard.Handler(http.HandlerFunc(s.handleLevel)))
 	mux.Handle("/api/v1/progress", guard.Handler(http.HandlerFunc(s.handleProgress)))

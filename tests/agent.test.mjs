@@ -25,6 +25,10 @@ function fixture(protocol, index) {
       : { type: 'message', role: 'assistant', content: [{ type: 'output_text', text }] };
     return { status: 'completed', output: [{ type: 'reasoning', encrypted_content: 'opaque' }, item] };
   }
+  if (protocol === 'OllamaChat') {
+    const message = index < 3 ? { tool_calls: [{ function: { name, arguments: args } }] } : { content: text };
+    return { message };
+  }
   const block = index < 3 ? { type: 'tool_use', id, name, input: args } : { type: 'text', text };
   return { stop_reason: index < 3 ? 'tool_use' : 'end_turn', content: [block] };
 }
@@ -39,6 +43,20 @@ function sse(stream) {
 
 function streamedFixture(protocol, index, inputTokens) {
   const result = fixture(protocol, index);
+  if (protocol === 'OllamaChat') {
+    const events = [
+      { message: { thinking: '先看画面' }, done: false },
+      { message: result.message, done: false },
+      { message: { content: '' }, done: true, done_reason: 'stop', prompt_eval_count: inputTokens },
+    ];
+    const bytes = new TextEncoder().encode(events.map((event) => JSON.stringify(event)).join('\n'));
+    return new Response(new ReadableStream({
+      start(controller) {
+        for (let i = 0; i < bytes.length; i += 7) controller.enqueue(bytes.slice(i, i + 7));
+        controller.close();
+      },
+    }), { headers: { 'Content-Type': 'application/x-ndjson' } });
+  }
   let events;
   if (protocol === 'OpenAIChatCompletions') {
     const { finish_reason, message } = result.choices[0];
@@ -102,6 +120,13 @@ function verifyImage(protocol, request, id) {
     assert.equal(reasoning.encrypted_content, 'opaque');
     assert.equal(screenshot.call_id, id);
     assert.deepEqual(screenshot.output, [{ type: 'input_image', image_url: png, detail: 'auto' }]);
+  } else if (protocol === 'OllamaChat') {
+    const [thinking, result, screenshot] = request.messages.slice(-3);
+    assert.equal(thinking.thinking, '先看画面');
+    assert.deepEqual(thinking.tool_calls, [{ function: { name: 'ReadScreen', arguments: {} } }]);
+    assert.deepEqual(result, { role: 'tool', tool_name: 'ReadScreen', content: 'Ok' });
+    assert.equal(screenshot.role, 'user');
+    assert.deepEqual(screenshot.images, ['cG5n']);
   } else {
     assert.deepEqual(request.messages.at(-2).content[0], {
       type: 'thinking', thinking: '先看画面', signature: 'opaque-signature',
@@ -122,7 +147,8 @@ for (const protocol of Object.keys(protocols)) {
     const statesSeen = [];
     const requests = [];
     const prompt = '只属于这张关卡的系统提示词';
-    const model = { api: protocol, model: 'mock', baseURL: 'http://unused', hasAPIKey: true };
+    const model = { api: protocol, model: 'mock', baseURL: 'http://unused', hasAPIKey: true,
+      reasoningEffort: protocol === 'OllamaChat' ? 'true' : '' };
     const agent = new Agent(model, prompt, {
       readScreen() { statesSeen.push(world.outcome); return png; },
       async whenActive() {},
@@ -148,6 +174,11 @@ for (const protocol of Object.keys(protocols)) {
         assert.equal(requestPrompt, prompt);
       }
       assert.equal(body.stream, true);
+      if (protocol === 'OllamaChat') {
+        assert.equal(body.messages[0].role, 'system');
+        assert.equal(body.think, true);
+        assert.equal(body.tools[0].function.name, 'ReadScreen');
+      }
       requests.push(body);
       return streamedFixture(protocol, requests.length - 1);
     };
@@ -158,7 +189,7 @@ for (const protocol of Object.keys(protocols)) {
       verifyImage(protocol, requests[3], 'call_2');
       assert.deepEqual(statesSeen, ['active', 'won']);
       const expected = ['player', 'tool', 'tool', 'tool', 'assistant'];
-      if (protocol === 'AnthropicMessages') {
+      if (protocol === 'AnthropicMessages' || protocol === 'OllamaChat') {
         assert.equal(events.filter((event) => event.kind === 'thinking').length, 4);
       }
       assert.deepEqual(events.filter((event) => event.kind !== 'thinking').map((event) => event.kind), expected);

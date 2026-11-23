@@ -1,4 +1,4 @@
-import { defaultMaxInputToken, protocols, readSettings, saveSettings } from './agent/settings.ts';
+import { defaultMaxInputToken, listModels, protocols, readSettings, saveSettings } from './agent/settings.ts';
 import type { ModelSettings, Protocol } from './agent/settings.ts';
 import type { Conversation } from './agent/agent.ts';
 import { mountEditor } from './editor/editor.ts';
@@ -6,6 +6,7 @@ import { playableError } from './level/definition.ts';
 import type { LevelDefinition } from './level/definition.ts';
 import { createLevel, migrateDraft, migrateProgress, readCatalog, readProgress, updateLevel, updateLevelOrder, updateProgress } from './storage/game.ts';
 import type { LevelEntry, Progress } from './storage/game.ts';
+import { editableCombobox } from './ui/combobox.ts';
 import { element } from './ui/elements.ts';
 import { renderHome, renderLevels } from './ui/front.ts';
 import { mountRun } from './ui/run.ts';
@@ -32,17 +33,26 @@ app.innerHTML = `
         <h2>模型连接</h2>
         <fieldset>
           <label>协议<select data-protocol></select></label>
-          <label>Base URL<input type="url" autocomplete="off" placeholder="https://api.openai.com/v1" data-base-url required></label>
-          <label>模型 ID<input type="text" autocomplete="off" data-model-id required></label>
-          <label>上下文长度（K）<input type="number" min="0.001" step="0.001" data-context-limit required></label>
-          <label>思考强度<select data-effort>
-            <option value="">默认</option>
-            <option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>ultra</option>
-            <option value="custom">自定义</option>
-          </select></label>
-          <label data-custom-effort-label hidden>自定义思考强度<input type="text" autocomplete="off" data-custom-effort></label>
+          <label>Base URL<input type="url" autocomplete="off" data-base-url required></label>
           <label>API Key<input type="password" autocomplete="off" data-api-key></label>
-          <label class="checkbox" data-remove-label hidden><input type="checkbox" data-remove-key>移除已保存的密钥</label>
+          <div class="settings-combobox">
+            <label id="model-label" for="model-id">模型</label>
+            <div class="combobox-input">
+              <input id="model-id" type="text" autocomplete="off" spellcheck="false" role="combobox"
+                aria-autocomplete="list" aria-controls="model-ids" aria-expanded="false" aria-describedby="model-list-status" data-model-id required>
+            </div>
+            <ul class="combobox-options" id="model-ids" role="listbox" aria-labelledby="model-label" hidden></ul>
+            <span class="settings-status" id="model-list-status" role="status" hidden></span>
+          </div>
+          <label>上下文长度（K）<input type="number" min="0.001" step="0.001" data-context-limit required></label>
+          <div class="settings-combobox">
+            <label id="effort-label" for="effort">思考长度</label>
+            <div class="combobox-input">
+              <input id="effort" type="text" autocomplete="off" spellcheck="false" placeholder="默认" role="combobox"
+                aria-autocomplete="none" aria-controls="effort-options" aria-expanded="false" data-effort>
+            </div>
+            <ul class="combobox-options" id="effort-options" role="listbox" aria-labelledby="effort-label" hidden></ul>
+          </div>
         </fieldset>
         <p class="settings-status" role="status" data-settings-status hidden></p>
         <div class="dialog-actions"><button type="button" data-clear-settings>清除连接</button><button type="submit" class="primary">保存</button></div>
@@ -92,18 +102,21 @@ const settingsFields = element<HTMLFieldSetElement>(settingsForm, 'fieldset');
 const protocolInput = element<HTMLSelectElement>(settingsForm, '[data-protocol]');
 const addressInput = element<HTMLInputElement>(settingsForm, '[data-base-url]');
 const modelInput = element<HTMLInputElement>(settingsForm, '[data-model-id]');
+const modelPicker = editableCombobox(modelInput, element(settingsForm, '#model-ids'), true);
+const modelListStatus = element(settingsForm, '#model-list-status');
 const contextInput = element<HTMLInputElement>(settingsForm, '[data-context-limit]');
-const effortInput = element<HTMLSelectElement>(settingsForm, '[data-effort]');
-const customEffortLabel = element(settingsForm, '[data-custom-effort-label]');
-const customEffortInput = element<HTMLInputElement>(customEffortLabel, 'input');
+const effortInput = element<HTMLInputElement>(settingsForm, '[data-effort]');
+const effortPicker = editableCombobox(effortInput, element(settingsForm, '#effort-options'));
 const keyInput = element<HTMLInputElement>(settingsForm, '[data-api-key]');
-const removeLabel = element<HTMLLabelElement>(settingsForm, '[data-remove-label]');
-const removeKey = element<HTMLInputElement>(settingsForm, '[data-remove-key]');
 const settingsStatus = element(settingsForm, '[data-settings-status]');
 const clearSettings = element<HTMLButtonElement>(settingsForm, '[data-clear-settings]');
 const submitSettings = element<HTMLButtonElement>(settingsForm, 'button[type="submit"]');
 
 for (const [protocol, { label }] of Object.entries(protocols)) protocolInput.add(new Option(label, protocol));
+effortPicker.setOptions([
+  { value: '', label: '默认' },
+  ...['low', 'medium', 'high', 'xhigh', 'ultra'].map((level) => ({ value: level, label: level })),
+]);
 
 let library: LevelEntry[] = [];
 let warnings: string[] = [];
@@ -122,6 +135,8 @@ let initialized = false;
 let mountedRoute = '';
 let routeRequest = 0;
 let settingsRequest = 0;
+let modelListRequest: AbortController | undefined;
+let modelsLoaded = false;
 let saving = false;
 
 function disposeScene() {
@@ -165,6 +180,7 @@ async function renderRoute() {
   if (modelSetup.open) {
     modelSetup.close();
     settingsScene.append(settingsForm);
+    resetModelList();
   }
   menuToggle.hidden = true;
   brand.hidden = isEditor;
@@ -187,6 +203,7 @@ async function renderRoute() {
     settingsScene.hidden = true;
     workspace.hidden = false;
     keyInput.value = '';
+    resetModelList();
     syncPause();
     if (mountedRoute === route && activeRun) {
       backdrop.hidden = true;
@@ -363,35 +380,71 @@ function updateKeyHint() {
   const sameEndpoint = model?.api === protocolInput.value &&
     model.baseURL === addressInput.value.trim().replace(/\/+$/, '');
   const retainsKey = Boolean(sameEndpoint && model?.hasAPIKey);
-  keyInput.placeholder = retainsKey ? '已保存，留空可保留' : '输入模型 API Key';
-  removeLabel.hidden = !retainsKey;
-  if (!retainsKey) removeKey.checked = false;
+  keyInput.placeholder = retainsKey ? '已保存，留空可保留'
+    : protocolInput.value === 'OllamaChat' ? '本地 Ollama 可留空' : '输入模型 API Key';
+}
+
+function showModelListStatus(text: string) {
+  modelListStatus.textContent = text;
+  modelListStatus.hidden = !text;
+}
+
+function resetModelList() {
+  modelListRequest?.abort();
+  modelListRequest = undefined;
+  modelsLoaded = false;
+  modelPicker.close();
+  modelPicker.setOptions([]);
+  showModelListStatus('');
+}
+
+function modelConnection() {
+  const apiKey = keyInput.value.trim();
+  return {
+    api: protocolInput.value as Protocol, baseURL: addressInput.value.trim(),
+    ...(apiKey ? { apiKey } : {}),
+  };
+}
+
+async function loadModelOptions() {
+  if (modelListRequest || modelsLoaded || !addressInput.value.trim() || !addressInput.validity.valid) return;
+  const request = modelListRequest = new AbortController();
+  showModelListStatus('正在读取模型列表…');
+  try {
+    const models = await listModels(modelConnection(), AbortSignal.any([request.signal, AbortSignal.timeout(17000)]));
+    if (request.signal.aborted) return;
+    modelPicker.setOptions(models.map((id) => ({ value: id, label: id })));
+    modelsLoaded = true;
+    showModelListStatus(models.length ? '' : '上游模型列表为空，可手动输入');
+  } catch (error) {
+    if (request.signal.aborted) return;
+    const text = error instanceof Error && error.name === 'TimeoutError' ? '读取模型列表超时'
+      : error instanceof Error && error.name === 'Error' ? error.message : '无法读取模型列表';
+    showModelListStatus(`${text}，可手动输入`);
+  } finally {
+    if (modelListRequest === request) modelListRequest = undefined;
+  }
 }
 
 function fillSettings() {
   const api = model?.api ?? 'OpenAIResponses';
   protocolInput.value = api;
   addressInput.value = model?.baseURL ?? protocols[api].baseURL;
-  modelInput.value = model?.model ?? '';
+  addressInput.placeholder = protocols[api].baseURL;
+  modelPicker.setValue(model?.model ?? '');
   contextInput.value = String((model?.maxInputToken ?? defaultMaxInputToken) / 1000);
-  const effort = model?.reasoningEffort ?? '';
-  const preset = [...effortInput.options].some((option) => option.value === effort && option.value !== 'custom');
-  effortInput.value = preset ? effort : 'custom';
-  customEffortInput.value = preset ? '' : effort;
-  updateCustomEffort();
+  effortPicker.setValue(model?.reasoningEffort ?? '');
   keyInput.value = '';
-  removeKey.checked = false;
   clearSettings.hidden = !model;
   updateKeyHint();
-}
-
-function updateCustomEffort() {
-  const custom = effortInput.value === 'custom';
-  customEffortLabel.hidden = !custom;
-  customEffortInput.required = custom;
+  resetModelList();
 }
 
 function lockSettings(locked: boolean) {
+  if (locked) {
+    modelPicker.close();
+    effortPicker.close();
+  }
   settingsFields.disabled = submitSettings.disabled = clearSettings.disabled = locked;
 }
 
@@ -469,6 +522,7 @@ modelSetup.addEventListener('close', () => {
   if (modelSetup.open || settingsForm.parentElement !== modelSetup) return;
   settingsScene.append(settingsForm);
   keyInput.value = '';
+  resetModelList();
   syncPause();
 });
 resumeButton.addEventListener('click', () => menu.close());
@@ -481,28 +535,28 @@ window.addEventListener('keydown', (event) => {
 });
 protocolInput.addEventListener('change', () => {
   addressInput.value = protocols[protocolInput.value as Protocol].baseURL;
+  addressInput.placeholder = addressInput.value;
   keyInput.value = '';
   updateKeyHint();
+  resetModelList();
 });
-addressInput.addEventListener('input', updateKeyHint);
-effortInput.addEventListener('change', updateCustomEffort);
+addressInput.addEventListener('input', () => {
+  updateKeyHint();
+  resetModelList();
+});
+keyInput.addEventListener('input', resetModelList);
+modelInput.addEventListener('focus', loadModelOptions);
+modelInput.addEventListener('click', loadModelOptions);
 settingsForm.addEventListener('submit', (event) => {
   event.preventDefault();
-  const apiKey = keyInput.value.trim();
   const maxInputToken = Math.round(contextInput.valueAsNumber * 1000);
-  const reasoningEffort = (effortInput.value === 'custom' ? customEffortInput.value : effortInput.value).trim();
+  const reasoningEffort = effortInput.value.trim();
   if (!Number.isSafeInteger(maxInputToken) || maxInputToken <= 0) {
     settingsMessage('上下文长度超出范围', true);
     return;
   }
-  if (effortInput.value === 'custom' && !reasoningEffort) {
-    settingsMessage('请输入自定义思考强度', true);
-    return;
-  }
   void commitSettings({ model: {
-    api: protocolInput.value as Protocol, baseURL: addressInput.value.trim(), model: modelInput.value.trim(),
-    maxInputToken, reasoningEffort,
-    ...(removeKey.checked ? { apiKey: '' } : apiKey ? { apiKey } : {}),
+    ...modelConnection(), model: modelInput.value.trim(), maxInputToken, reasoningEffort,
   } });
 });
 clearSettings.addEventListener('click', () => { void commitSettings({ model: null }); });
