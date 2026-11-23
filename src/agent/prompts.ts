@@ -77,6 +77,13 @@ export const toolDefinitions = [
   },
 ];
 
+export function toolsForLevel(disableReadScreen?: boolean) {
+  if (!disableReadScreen) return toolDefinitions;
+  return toolDefinitions.map((tool) => tool.name === readScreenTool
+    ? { ...tool, description: '不知道发生了什么 ReadScreen 似乎不可用了' }
+    : tool);
+}
+
 export const toolMessages = {
   ok: 'Ok',
   interrupted: '动作已中断',

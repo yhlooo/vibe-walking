@@ -44,14 +44,23 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 		return reply
 	}
 	catalog := gameResponse[levels.Catalog](t, request("GET", "levels", nil, 200))
-	builtInIDs := []string{"walk-to-red-button", "slippery-floor", "weightlessness", "midair-jump", "all-roads-lead-to-rome", "trust"}
-	builtInNames := []string{"01 走到红色按钮", "02 小心地滑", "03 失重", "04 悬空起跳", "05 条条大路通罗马", "06 信任"}
+	builtInIDs := []string{
+		"walk-to-red-button", "slippery-floor", "weightlessness", "midair-jump", "all-roads-lead-to-rome",
+		"three-days-to-see", "leap-of-faith", "jump", "trust",
+	}
+	builtInNames := []string{
+		"01 走到红色按钮", "02 小心地滑", "03 失重", "04 悬空起跳", "05 条条大路通罗马",
+		"06 假如给我三天光明", "07 信仰之跃", "08 跳一跳", "09 信任",
+	}
 	if len(catalog.Levels) != len(builtInIDs) {
 		t.Fatalf("unexpected built-in order: %+v", catalog)
 	}
 	for index, entry := range catalog.Levels {
 		if entry.Kind != "builtin" || entry.ID != builtInIDs[index] || entry.Level.Name != builtInNames[index] {
 			t.Fatalf("unexpected built-in level at index %d: %+v", index, entry)
+		}
+		if entry.ID == "three-days-to-see" && !entry.Level.DisableReadScreen {
+			t.Fatal("expected Three Days to See to disable ReadScreen")
 		}
 	}
 	request("GET", "levels/0001", nil, 404)
@@ -64,9 +73,13 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	custom.Level.Name = "自定义关卡"
 	empty := ""
 	custom.Level.SystemPrompt = &empty
+	custom.Level.DisableReadScreen = true
 	saved := gameResponse[levels.Entry](t, request("PUT", levelPath, custom.Level, 200))
 	if saved.Revision != custom.Revision || saved.Level.SystemPrompt == nil || *saved.Level.SystemPrompt != "" {
 		t.Fatalf("editing the prompt should preserve the physics revision and the explicit override: %+v", saved)
+	}
+	if !saved.Level.DisableReadScreen {
+		t.Fatalf("expected ReadScreen to be disabled: %+v", saved)
 	}
 	request("PUT", levelPath, json.RawMessage(`{"name":"broken"}`), 400)
 	custom.Level.SystemPrompt = nil
@@ -114,6 +127,10 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	request("PUT", "progress/"+custom.ID, levels.ProgressUpdate{Revision: saved.Revision, SavedAt: 11, Recent: true, Run: &customRun}, 200)
 
 	handler = start()
+	reloaded := gameResponse[levels.Entry](t, request("GET", levelPath, nil, 200))
+	if !reloaded.Level.DisableReadScreen {
+		t.Fatalf("expected the ReadScreen setting to survive a restart: %+v", reloaded)
+	}
 	assertOrder(legacy.ID, custom.ID)
 	if err := os.WriteFile(filepath.Join(dir, "levels", "manual.json"), raw, 0o600); err != nil {
 		t.Fatal(err)

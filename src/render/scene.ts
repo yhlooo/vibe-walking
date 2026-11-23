@@ -4,11 +4,11 @@ import type { Point } from '../level/definition.ts';
 import type { Snapshot } from '../game/world.ts';
 
 type EditOverlay = { hover?: Point; spawn?: Point };
-type DrawOptions = { edit?: EditOverlay; preview?: boolean; pixelHeight?: number };
+type DrawOptions = { edit?: EditOverlay; preview?: boolean; pixelHeight?: number; black?: boolean };
 
 export function drawScene(
   canvas: HTMLCanvasElement, { level, player, outcome }: Snapshot,
-  { edit, preview, pixelHeight }: DrawOptions = {},
+  { edit, preview, pixelHeight, black }: DrawOptions = {},
 ) {
   const { rows, columns } = gridSize(level.tiles);
   const ratio = String(columns / rows);
@@ -28,6 +28,12 @@ export function drawScene(
   const context = canvas.getContext('2d');
   if (!context) throw new Error(toolMessages.cannotDrawScreen);
   const { width, height } = canvas;
+  if (black) {
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.fillStyle = '#000';
+    context.fillRect(0, 0, width, height);
+    return;
+  }
   context.setTransform(width / columns, 0, 0, height / rows, 0, 0);
 
   const background = context.createLinearGradient(0, 0, 0, rows);
@@ -117,8 +123,8 @@ function drawGrid(context: CanvasRenderingContext2D, columns: number, rows: numb
   }
 }
 
-export function captureScene(snapshot: Snapshot): string {
+export function captureScene(snapshot: Snapshot, black = false): string {
   const canvas = document.createElement('canvas');
-  drawScene(canvas, snapshot, { pixelHeight: 512 });
+  drawScene(canvas, snapshot, { pixelHeight: 512, black });
   return canvas.toDataURL('image/png');
 }

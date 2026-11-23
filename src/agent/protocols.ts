@@ -1,5 +1,5 @@
 import { isRecord } from '../level/definition.ts';
-import { screenshotPrompt, toolDefinitions } from './prompts.ts';
+import { screenshotPrompt, toolsForLevel } from './prompts.ts';
 import type { ModelSettings, Protocol } from './settings.ts';
 
 type Item = Record<string, unknown>;
@@ -11,12 +11,14 @@ type EmitDelta = (kind: OutputKind, text: string) => void;
 type Accumulator = { push(event: Item): boolean | void; finish(): Reply };
 
 type Adapter = {
-  request(settings: ModelSettings, prompt: string, history: Item[], includeTools: boolean): Item;
+  request(settings: ModelSettings, prompt: string, history: Item[], includeTools: boolean, disableReadScreen?: boolean): Item;
   read(value: unknown): Reply;
   result(call: ToolCall, value: ToolResult): Item[];
 };
 
-const openAIFunctions = toolDefinitions.map((tool) => ({ ...tool, strict: false }));
+function openAIFunctions(disableReadScreen?: boolean) {
+  return toolsForLevel(disableReadScreen).map((tool) => ({ ...tool, strict: false }));
+}
 
 function object(value: unknown): Item {
   if (!isRecord(value)) throw new Error('模型响应格式不正确');
@@ -45,13 +47,13 @@ function textBlocks(value: unknown, type: string): string {
 }
 
 const chatCompletions: Adapter = {
-  request(settings, prompt, history, includeTools) {
+  request(settings, prompt, history, includeTools, disableReadScreen) {
     return {
       model: settings.model, messages: [{ role: 'developer', content: prompt }, ...history], stream: true,
       stream_options: { include_usage: true },
       ...(effort(settings) ? { reasoning_effort: effort(settings) } : {}),
       ...(includeTools ? {
-        tools: openAIFunctions.map((definition) => ({ type: 'function', function: definition })),
+        tools: openAIFunctions(disableReadScreen).map((definition) => ({ type: 'function', function: definition })),
         parallel_tool_calls: false, tool_choice: 'auto',
       } : {}),
     };
@@ -87,7 +89,7 @@ const chatCompletions: Adapter = {
 };
 
 const responses: Adapter = {
-  request(settings, instructions, input, includeTools) {
+  request(settings, instructions, input, includeTools, disableReadScreen) {
     const level = effort(settings);
     const summary = level !== 'none' && (level || /^(?:o[1-9](?:-|$)|gpt-[5-9](?:[.-]|$))/.test(settings.model));
     return {
@@ -95,7 +97,7 @@ const responses: Adapter = {
       include: ['reasoning.encrypted_content'],
       ...(summary || level ? { reasoning: { ...(summary ? { summary: 'auto' } : {}), ...(level ? { effort: level } : {}) } } : {}),
       ...(includeTools ? {
-        parallel_tool_calls: false, tools: openAIFunctions.map((definition) => ({ type: 'function', ...definition })),
+        parallel_tool_calls: false, tools: openAIFunctions(disableReadScreen).map((definition) => ({ type: 'function', ...definition })),
         tool_choice: 'auto',
       } : {}),
     };
@@ -124,7 +126,7 @@ const responses: Adapter = {
 };
 
 const anthropicMessages: Adapter = {
-  request(settings, system, messages, includeTools) {
+  request(settings, system, messages, includeTools, disableReadScreen) {
     const level = effort(settings);
     const officialEndpoint = /^https:\/\/api\.anthropic\.com(?:\/|$)/i.test(settings.baseURL);
     const adaptive = (level && !officialEndpoint) ||
@@ -134,7 +136,7 @@ const anthropicMessages: Adapter = {
       ...(adaptive ? { thinking: { type: 'adaptive', display: 'summarized' } } : {}),
       ...(level ? { output_config: { effort: level } } : {}),
       ...(includeTools ? {
-        tools: toolDefinitions.map(({ name, description, parameters }) => ({ name, description, input_schema: parameters })),
+        tools: toolsForLevel(disableReadScreen).map(({ name, description, parameters }) => ({ name, description, input_schema: parameters })),
         tool_choice: { type: 'auto', disable_parallel_tool_use: true },
       } : {}),
     };
@@ -165,13 +167,13 @@ const anthropicMessages: Adapter = {
 };
 
 const ollamaChat: Adapter = {
-  request(settings, prompt, history, includeTools) {
+  request(settings, prompt, history, includeTools, disableReadScreen) {
     const level = settings.reasoningEffort;
     const think = level === 'true' ? true : level === 'false' || level === 'none' ? false : level;
     return {
       model: settings.model, messages: [{ role: 'system', content: prompt }, ...history], stream: true,
       ...(level ? { think } : {}),
-      ...(includeTools ? { tools: toolDefinitions.map((definition) => ({ type: 'function', function: definition })) } : {}),
+      ...(includeTools ? { tools: toolsForLevel(disableReadScreen).map((definition) => ({ type: 'function', function: definition })) } : {}),
     };
   },
   read(value) {

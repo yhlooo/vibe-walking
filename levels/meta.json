@@ -25,8 +25,23 @@
     "definition": "05-all-roads-lead-to-rome.json"
   },
   {
+    "id": "three-days-to-see",
+    "name": "06 假如给我三天光明",
+    "definition": "06-three-days-to-see.json"
+  },
+  {
+    "id": "leap-of-faith",
+    "name": "07 信仰之跃",
+    "definition": "07-leap-of-faith.json"
+  },
+  {
+    "id": "jump",
+    "name": "08 跳一跳",
+    "definition": "08-jump.json"
+  },
+  {
     "id": "trust",
-    "name": "06 信任",
-    "definition": "06-trust.json"
+    "name": "09 信任",
+    "definition": "09-trust.json"
   }
 ]

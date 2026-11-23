@@ -158,6 +158,8 @@ kbd { display: inline-block; min-width: 18px; text-align: center; border: 1px so
 
 .editor-tools { display: flex; flex-direction: column; gap: 14px; padding: 14px; }
 .editor-tools label, .settings-form label { display: grid; gap: 7px; font-size: 13px; color: #ddd3e9; }
+.editor-tools .read-screen-control { display: flex; align-items: center; cursor: pointer; }
+.read-screen-control input { accent-color: var(--accent); }
 input, textarea, select { border: 1px solid #433a53; background: var(--inset); border-radius: 7px; padding: 9px 10px; min-width: 0; font-size: 13px; }
 input::placeholder, textarea::placeholder { color: #9d90ad; }
 .editor-tool-title { display: flex; align-items: center; justify-content: space-between; gap: 6px; }

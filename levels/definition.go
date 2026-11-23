@@ -17,13 +17,14 @@ type Point struct {
 
 // Definition is the JSON format shared by shipped, editable and exported maps.
 type Definition struct {
-	SchemaVersion int      `json:"schemaVersion"`
-	Name          string   `json:"name"`
-	Tiles         []string `json:"tiles"`
-	Spawn         Point    `json:"spawn"`
-	Gravity       float64  `json:"gravity"`
-	Inertia       float64  `json:"inertia"`
-	SystemPrompt  *string  `json:"systemPrompt,omitempty"`
+	SchemaVersion     int      `json:"schemaVersion"`
+	Name              string   `json:"name"`
+	Tiles             []string `json:"tiles"`
+	Spawn             Point    `json:"spawn"`
+	Gravity           float64  `json:"gravity"`
+	Inertia           float64  `json:"inertia"`
+	DisableReadScreen bool     `json:"disableReadScreen,omitempty"`
+	SystemPrompt      *string  `json:"systemPrompt,omitempty"`
 }
 
 type definitionJSON struct {
@@ -32,9 +33,10 @@ type definitionJSON struct {
 		X *int `json:"x"`
 		Y *int `json:"y"`
 	} `json:"spawn"`
-	Gravity json.RawMessage `json:"gravity"`
-	Inertia json.RawMessage `json:"inertia"`
-	Prompt  json.RawMessage `json:"systemPrompt"`
+	Gravity           json.RawMessage `json:"gravity"`
+	Inertia           json.RawMessage `json:"inertia"`
+	DisableReadScreen json.RawMessage `json:"disableReadScreen"`
+	Prompt            json.RawMessage `json:"systemPrompt"`
 }
 
 // Decode validates the map structure. An unfinished draft may lack a supported button.
@@ -79,6 +81,9 @@ func Decode(data []byte) (Definition, error) {
 	}
 	if err := readField(body.Inertia, &level.Inertia); err != nil || level.Inertia < 0 || level.Inertia > 10 {
 		return Definition{}, errors.New("惯性必须在 0 到 10 之间")
+	}
+	if err := readField(body.DisableReadScreen, &level.DisableReadScreen); err != nil {
+		return Definition{}, errors.New("disableReadScreen 必须为布尔值")
 	}
 	if body.Prompt != nil {
 		var prompt string

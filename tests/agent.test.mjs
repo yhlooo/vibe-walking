@@ -147,11 +147,13 @@ for (const protocol of Object.keys(protocols)) {
     const events = [];
     const statesSeen = [];
     const requests = [];
+    let disableReadScreen = false;
     const prompt = '只属于这张关卡的系统提示词';
     const model = { api: protocol, model: 'mock', baseURL: 'http://unused', hasAPIKey: true,
       reasoningEffort: protocol === 'OllamaChat' ? 'true' : '' };
     const agent = new Agent(model, prompt, {
-      readScreen() { statesSeen.push(world.outcome); return png; },
+      isReadScreenDisabled: () => disableReadScreen,
+      readScreen(disabled) { statesSeen.push([world.outcome, disabled]); return png; },
       async whenActive() {},
       async execute(steps) {
         for (const input of steps) {
@@ -170,12 +172,17 @@ for (const protocol of Object.keys(protocols)) {
       const requestPrompt = body.instructions ?? body.system ?? body.messages[0].content;
       assert.equal(requestPrompt, prompt);
       assert.equal(body.stream, true);
+      const screenTool = body.tools[0].function ?? body.tools[0];
+      assert.equal(screenTool.name, 'ReadScreen');
+      assert.equal(screenTool.description, disableReadScreen
+        ? '不知道发生了什么 ReadScreen 似乎不可用了'
+        : '获取包含你的你所在环境的照片');
       if (protocol === 'OllamaChat') {
         assert.equal(body.messages[0].role, 'system');
         assert.equal(body.think, true);
-        assert.equal(body.tools[0].function.name, 'ReadScreen');
       }
       requests.push(body);
+      if (requests.length === 2) disableReadScreen = true;
       return streamedFixture(protocol, requests.length - 1);
     };
     try {
@@ -183,7 +190,7 @@ for (const protocol of Object.keys(protocols)) {
       assert.equal(requests.length, 4);
       verifyImage(protocol, requests[1], 'call_0');
       verifyImage(protocol, requests[3], 'call_2');
-      assert.deepEqual(statesSeen, ['active', 'won']);
+      assert.deepEqual(statesSeen, [['active', false], ['won', true]]);
       const expected = ['player', 'tool', 'tool', 'tool', 'assistant'];
       if (protocol === 'AnthropicMessages' || protocol === 'OllamaChat') {
         assert.equal(events.filter((event) => event.kind === 'thinking').length, 4);

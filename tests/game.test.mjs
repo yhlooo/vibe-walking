@@ -194,7 +194,7 @@ test('zero gravity allows one upward jump after spawning unsupported or moving o
 
 test('scene orientation and button artwork stay the same under any gravity', () => {
   const gradient = { addColorStop() {} };
-  function draw(gravity, outcome) {
+  function draw(gravity, outcome, black = false) {
     const rectangles = [];
     const context = {
       setTransform() {}, createLinearGradient: () => gradient,
@@ -204,18 +204,19 @@ test('scene orientation and button artwork stay the same under any gravity', () 
     const canvas = { style: { getPropertyValue() {}, setProperty() {} }, getContext: () => context };
     drawScene(canvas, {
       level: { ...firstLevel, gravity }, player: { ...firstLevel.spawn, facing: 1 }, outcome,
-    }, { pixelHeight: 512 });
+    }, { pixelHeight: 512, black });
     return rectangles;
   }
   for (const outcome of ['active', 'won']) {
     const original = draw(1, outcome);
     assert.deepEqual(draw(-1, outcome), original);
     assert.deepEqual(draw(0, outcome), original);
+    assert.deepEqual(draw(1, outcome, true), [['#000', 0, 0, 910, 512]]);
   }
 });
 
 test('all three map presets round-trip with a supported goal and a valid spawn', () => {
-  const builtIn = readLevel(JSON.parse(readFileSync(new URL('../levels/definitions/06-trust.json', import.meta.url))));
+  const builtIn = readLevel(JSON.parse(readFileSync(new URL('../levels/definitions/09-trust.json', import.meta.url))));
   assert.deepEqual(gridSize(builtIn.tiles), { rows: 10, columns: 15 });
   for (const { rows, columns } of gridSizes) {
     const board = resizeLevel(builtIn, rows, columns);
@@ -256,6 +257,10 @@ test('recorded keyboard inputs replay exactly, and invalid sequences are rejecte
 test('JSON round trips and rejects invalid maps and unsupported buttons', () => {
   const json = exportLevel(firstLevel);
   assert.deepEqual(importLevel(json), firstLevel);
+  const disabled = { ...firstLevel, disableReadScreen: true };
+  assert.deepEqual(importLevel(exportLevel(disabled)), disabled);
+  assert.deepEqual(importLevel(exportLevel({ ...disabled, disableReadScreen: false })), firstLevel);
+  assert.throws(() => importLevel(JSON.stringify({ ...disabled, disableReadScreen: null })), /布尔值/);
   assert.throws(() => importLevel(`${json}{}`));
   assert.throws(() => importLevel(JSON.stringify({ ...firstLevel, extra: true })), /未知字段/);
   assert.throws(() => importLevel(json.replace('################', '############.###')), /支撑|实心块/);

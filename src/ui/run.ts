@@ -295,7 +295,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     if (!model || !username || (outcome !== 'active' && !(outcome === 'won' && result))) return;
     agent = new Agent(model, defaultPrompt, {
       whenActive: (requestSignal) => runtime.whenActive(requestSignal),
-      readScreen: () => captureScene(runtime.world.snapshot()),
+      isReadScreenDisabled: () => level.disableReadScreen ?? false,
+      readScreen: (disabled) => captureScene(runtime.world.snapshot(), disabled),
       execute: (steps, requestSignal) => runtime.execute(steps, requestSignal),
       outcome: () => runtime.world.outcome,
     }, (event) => {

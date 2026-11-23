@@ -33,7 +33,8 @@ export type Conversation = {
 };
 
 type GameTools = {
-  readScreen: () => string;
+  isReadScreenDisabled?: () => boolean;
+  readScreen: (disabled: boolean) => string;
   execute: (steps: StepInput[], signal: AbortSignal) => Promise<void>;
   whenActive: (signal: AbortSignal) => Promise<void>;
   outcome: () => Outcome;
@@ -210,7 +211,7 @@ export class Agent {
   ) {
     signal.throwIfAborted();
     const protocol = this.model.api;
-    const body = adapters[protocol].request(this.model, prompt, history, includeTools);
+    const body = adapters[protocol].request(this.model, prompt, history, includeTools, this.tools.isReadScreenDisabled?.());
     const idle = new AbortController();
     const requestSignal = AbortSignal.any([signal, idle.signal]);
     let timer: ReturnType<typeof setTimeout>;
@@ -259,7 +260,7 @@ export class Agent {
       const args: unknown = call.serialized ? JSON.parse(typeof call.args === 'string' ? call.args : '') : call.args;
       if (call.name === readScreenTool) {
         if (!isRecord(args) || Object.keys(args).length) throw new Error(toolMessages.invalidReadScreenArgs);
-        const image = this.tools.readScreen();
+        const image = this.tools.readScreen(this.tools.isReadScreenDisabled?.() ?? false);
         this.emit({ kind: 'tool', text: '看了一眼', image });
         return { text: toolMessages.ok, image };
       }

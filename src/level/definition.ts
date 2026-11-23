@@ -18,6 +18,7 @@ export type LevelDefinition = {
   spawn: Point;
   gravity: number;
   inertia: number;
+  disableReadScreen?: boolean;
   systemPrompt?: string;
 };
 
@@ -39,7 +40,7 @@ function numberField(value: unknown, label: string, min: number, max: number): n
 
 export function readLevel(value: unknown): LevelDefinition {
   if (!isRecord(value)) throw new Error('关卡定义必须是对象');
-  requireFields(value, ['schemaVersion', 'name', 'tiles', 'spawn', 'gravity', 'inertia', 'systemPrompt']);
+  requireFields(value, ['schemaVersion', 'name', 'tiles', 'spawn', 'gravity', 'inertia', 'disableReadScreen', 'systemPrompt']);
   if (value.schemaVersion !== 1) throw new Error('关卡 schemaVersion 必须为 1');
   const name = typeof value.name === 'string' ? value.name.trim() : '';
   if (!name || name.length > 80) throw new Error('关卡名必须为 1 到 80 个字符');
@@ -68,12 +69,17 @@ export function readLevel(value: unknown): LevelDefinition {
   }
   const gravity = numberField(value.gravity === undefined ? 1 : value.gravity, '重力', -10, 10);
   const inertia = numberField(value.inertia === undefined ? 0.5 : value.inertia, '惯性', 0, 10);
+  const disableReadScreen = value.disableReadScreen;
+  if (disableReadScreen !== undefined && typeof disableReadScreen !== 'boolean') {
+    throw new Error('disableReadScreen 必须为布尔值');
+  }
   const systemPrompt = value.systemPrompt;
   if (systemPrompt !== undefined && (typeof systemPrompt !== 'string' || systemPrompt.length > 4096)) {
     throw new Error('系统提示词最多 4096 个字符');
   }
   return {
     schemaVersion: 1, name, tiles, spawn: { x, y }, gravity, inertia,
+    ...(disableReadScreen ? { disableReadScreen } : {}),
     ...(typeof systemPrompt === 'string' ? { systemPrompt } : {}),
   };
 }

@@ -86,9 +86,10 @@ func NewStore(dir string) (*Store, error) {
 }
 
 func newEntry(id, kind string, level Definition) Entry {
-	// Renaming a level or updating its prompt does not invalidate its physical checkpoint.
+	// Only physical changes invalidate a checkpoint.
 	board := level
 	board.Name, board.SystemPrompt = "", nil
+	board.DisableReadScreen = false
 	raw, _ := json.Marshal(board)
 	sum := sha256.Sum256(raw)
 	return Entry{ID: id, Kind: kind, Level: level, Revision: hex.EncodeToString(sum[:])}

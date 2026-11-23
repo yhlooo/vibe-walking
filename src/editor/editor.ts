@@ -42,6 +42,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
         <button class="prompt-button" type="button" data-open-prompt aria-haspopup="dialog">
           <span>System Prompt</span><span class="subtle" data-prompt-state></span>
         </button>
+        <label class="read-screen-control"><input type="checkbox" role="switch" data-disable-read-screen>禁用 ReadScreen 工具</label>
         <div class="editor-actions">
           <input data-import-file type="file" accept=".json,application/json" hidden>
           <button type="button" data-import>导入 JSON</button>
@@ -77,6 +78,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
   const resetPrompt = element<HTMLButtonElement>(promptDialog, '[data-reset-prompt]');
   const gravity = element<HTMLInputElement>(root, '[data-gravity]');
   const inertia = element<HTMLInputElement>(root, '[data-inertia]');
+  const disableReadScreen = element<HTMLInputElement>(root, '[data-disable-read-screen]');
   const file = element<HTMLInputElement>(root, '[data-import-file]');
   const exportButton = element<HTMLButtonElement>(root, '[data-export]');
   const brushes = root.querySelectorAll<HTMLButtonElement>('[data-brush]');
@@ -139,6 +141,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     showPrompt(false);
     gravity.value = String(draft.gravity);
     inertia.value = String(draft.inertia);
+    disableReadScreen.checked = draft.disableReadScreen ?? false;
     loadSizes();
     fieldError = '';
   }
@@ -289,6 +292,10 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     }, { signal });
   }
   for (const input of [name, gravity, inertia]) input.addEventListener('input', editFields, { signal });
+  disableReadScreen.addEventListener('change', () => {
+    draft = { ...draft, disableReadScreen: disableReadScreen.checked };
+    persist();
+  }, { signal });
   size.addEventListener('change', () => {
     const next = gridSizes.find(({ rows }) => String(rows) === size.value);
     if (!next) return;
