@@ -215,7 +215,7 @@ test('scene orientation and button artwork stay the same under any gravity', () 
 });
 
 test('all three map presets round-trip with a supported goal and a valid spawn', () => {
-  const builtIn = readLevel(JSON.parse(readFileSync(new URL('../levels/definitions/05-trust.json', import.meta.url))));
+  const builtIn = readLevel(JSON.parse(readFileSync(new URL('../levels/definitions/06-trust.json', import.meta.url))));
   assert.deepEqual(gridSize(builtIn.tiles), { rows: 10, columns: 15 });
   for (const { rows, columns } of gridSizes) {
     const board = resizeLevel(builtIn, rows, columns);

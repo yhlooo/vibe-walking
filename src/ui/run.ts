@@ -9,6 +9,7 @@ import type { ProgressUpdate, SavedRun } from '../storage/game.ts';
 import { element, formatDuration } from './elements.ts';
 
 const resultDelayMS = 5000;
+const victoryPrompt = '<system-info>红色按钮被按下，恭喜通关🎉</system-info>';
 
 type RunOptions = {
   level: LevelDefinition;
@@ -144,7 +145,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     const busy = agent?.busy ?? false;
     const chat = canChat() && !manual;
     const won = runtime.world.outcome === 'won';
-    send.disabled = !busy && (!agent || !chat || !input.value.trim());
+    send.disabled = resultPending || (!busy && (!agent || !chat || !input.value.trim()));
     send.textContent = busy ? '中断' : '发送';
     connect.textContent = username ? '配置模型' : '设置用户名';
     connect.hidden = Boolean(model && username) || manual;
@@ -221,6 +222,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   }
 
   function ended(outcome: Outcome) {
+    const durationMS = outcome === 'won' ? elapsedTime() : undefined;
     refreshStage();
     if (outcome === 'lost') {
       stopAgent();
@@ -230,20 +232,34 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       resultPending = true;
       doneBadge.hidden = false;
       if (playNext?.hasAttribute('href')) playNext.hidden = false;
-      const durationMS = elapsedTime();
       const time = element(result, '[data-result-duration]');
       time.hidden = durationMS === undefined;
       if (durationMS !== undefined) time.textContent = `通关耗时 · ${formatDuration(durationMS)}`;
       saveProgress({ run: null, won: true, durationMS });
-      showResultWhenReady();
+      void requestVictoryReply();
     }
     refreshRecording();
     refreshStatus();
   }
 
+  async function requestVictoryReply() {
+    // Disposing the previous agent aborts its turn and retains its output in the shared conversation.
+    replaceAgent();
+    delete conversation.interrupted;
+    delete conversation.pendingSystemInfo;
+    const current = agent;
+    const replyModel = model;
+    const replyUsername = username;
+    if (current) await current.send(victoryPrompt, level.systemPrompt ?? defaultPrompt);
+    if (signal.aborted || !resultPending || current !== agent) return;
+    resultReadyAt = performance.now() + resultDelayMS;
+    if (model !== replyModel || username !== replyUsername) replaceAgent();
+    showResultWhenReady();
+    refreshStatus();
+  }
+
   function showResultWhenReady() {
-    if (!result || !resultPending || agent?.busy) return;
-    resultReadyAt ??= performance.now() + resultDelayMS;
+    if (!result || !resultPending || resultReadyAt === undefined) return;
     const remaining = resultReadyAt - performance.now();
     if (remaining > 0) {
       resultTimer ??= window.setTimeout(() => {
@@ -403,6 +419,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     }
   }, { signal });
   clearChat.addEventListener('click', () => {
+    if (resultPending) return;
     replaceAgent();
     conversation.events.length = conversation.history.length = 0;
     delete conversation.protocol;
@@ -411,7 +428,6 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     delete conversation.interrupted;
     input.value = '';
     showEmptyChat();
-    showResultWhenReady();
     refreshStatus();
   }, { signal });
 
@@ -425,6 +441,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   }, { signal });
   composer.addEventListener('submit', async (event) => {
     event.preventDefault();
+    if (resultPending) return;
     if (agent?.busy) {
       agent.interrupt();
       return;
@@ -440,7 +457,6 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     await current.send(text, level.systemPrompt ?? defaultPrompt);
     if (!signal.aborted && current === agent) {
       checkpoint(true);
-      showResultWhenReady();
       refreshStatus();
     }
   }, { signal });
@@ -476,8 +492,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     onSettingsChange(next: ModelSettings | null, nextUsername: string) {
       model = next;
       username = nextUsername;
-      replaceAgent();
-      showResultWhenReady();
+      if (!resultPending || resultReadyAt !== undefined) replaceAgent();
       refreshStatus();
     },
     setPaused(nextPaused: boolean) {
