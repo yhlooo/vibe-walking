@@ -3,7 +3,7 @@ import { isRecord } from '../level/definition.ts';
 import { contextToSummarize, estimateContext } from './context.ts';
 import type { ContextUsage } from './context.ts';
 import { acceptStreamEvent, adapters, streamReply } from './protocols.ts';
-import type { OutputKind, ToolCall, ToolResult } from './protocols.ts';
+import type { OutputKind, Reply, ToolCall, ToolResult } from './protocols.ts';
 import {
   compressionInput, compressionPrompt, execActionSequenceTool, interruptionInfo, modelErrorMessages, personalizePrompt,
   readScreenTool, summarizedHistoryPrompt, thinkingContext, toolMessages,
@@ -103,16 +103,24 @@ export class Agent {
     this.emit({ kind: 'player', text, ...(systemInfo ? { systemInfo } : {}), ...(hidden ? { hidden } : {}) });
 
     let output: ChatEvent[] = [];
-    let completedTool: { history: Record<string, unknown>[]; call: ToolCall } | undefined;
+    let pendingTools: { reply: Reply; results: ToolResult[]; running: boolean } | undefined;
     const retainOutput = () => {
-      if (completedTool) {
-        history.push(...completedTool.history, ...adapter.result(completedTool.call, { text: toolMessages.interrupted, error: true }));
+      if (pendingTools) {
+        const { reply, results, running } = pendingTools;
+        const completed = reply.calls.map((call, index) => ({
+          call,
+          result: results[index] ?? {
+            text: running && index === results.length ? toolMessages.interrupted : toolMessages.notExecuted,
+            error: true,
+          },
+        }));
+        history.push(...reply.history, ...adapter.results(completed));
       } else {
         const content = output.map((event) => event.kind === 'thinking' ? thinkingContext(event.text) : event.text).join('\n');
         if (content) history.push({ role: 'assistant', content });
       }
       output = [];
-      completedTool = undefined;
+      pendingTools = undefined;
     };
     signal.addEventListener('abort', retainOutput, { once: true });
 
@@ -162,20 +170,25 @@ export class Agent {
         const reply = await this.generate(prompt, history, true, signal, onDelta);
         signal.throwIfAborted();
         if (reply.inputTokens) conversation.usage = { key: usageKey, estimate, tokens: reply.inputTokens };
+        if (reply.calls.length) pendingTools = { reply, results: [], running: false };
         if (!output.some((event) => event.kind === 'assistant')) onDelta('assistant', reply.text);
-        if (!reply.call) {
+        signal.throwIfAborted();
+        if (!pendingTools) {
           history.push(...reply.history);
           output = [];
           return;
         }
-        completedTool = { history: reply.history, call: reply.call };
-        await this.tools.whenActive(signal);
-        signal.throwIfAborted();
-        const toolResult = await this.runTool(reply.call, signal);
-        signal.throwIfAborted();
-        history.push(...reply.history, ...adapter.result(reply.call, toolResult));
-        completedTool = undefined;
-        output = [];
+        const batch = pendingTools;
+        for (const call of reply.calls) {
+          await this.tools.whenActive(signal);
+          signal.throwIfAborted();
+          batch.running = true;
+          const result = await this.runTool(call, signal);
+          signal.throwIfAborted();
+          batch.results.push(result);
+          batch.running = false;
+        }
+        retainOutput();
       }
     } catch (error) {
       if (!signal.aborted) {
@@ -270,6 +283,7 @@ export class Agent {
       const steps = compileActions(args);
       actionEvent = { kind: 'tool', text: '执行动作', detail: actionDetail };
       this.emit(actionEvent);
+      signal.throwIfAborted();
       await this.tools.execute(steps, signal);
       signal.throwIfAborted();
       return { text: toolMessages.ok };

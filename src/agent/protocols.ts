@@ -5,7 +5,8 @@ import type { ModelSettings, Protocol } from './settings.ts';
 type Item = Record<string, unknown>;
 export type ToolCall = { id: string; name: string; args: unknown; serialized: boolean };
 export type ToolResult = { text: string; image?: string; error?: boolean };
-export type Reply = { history: Item[]; text: string; call?: ToolCall; inputTokens?: number };
+type CompletedCall = { call: ToolCall; result: ToolResult };
+export type Reply = { history: Item[]; text: string; calls: ToolCall[]; inputTokens?: number };
 export type OutputKind = 'assistant' | 'thinking';
 type EmitDelta = (kind: OutputKind, text: string) => void;
 type Accumulator = { push(event: Item): boolean | void; finish(): Reply };
@@ -13,7 +14,7 @@ type Accumulator = { push(event: Item): boolean | void; finish(): Reply };
 type Adapter = {
   request(settings: ModelSettings, prompt: string, history: Item[], includeTools: boolean, disableReadScreen?: boolean): Item;
   read(value: unknown): Reply;
-  result(call: ToolCall, value: ToolResult): Item[];
+  results(calls: CompletedCall[]): Item[];
 };
 
 function openAIFunctions(disableReadScreen?: boolean) {
@@ -37,11 +38,6 @@ function tool(id: unknown, name: unknown, args: unknown, serialized: boolean): T
   return { id, name: typeof name === 'string' ? name : '', args, serialized };
 }
 
-function onlyCall(calls: Item[]): Item | undefined {
-  if (calls.length > 1) throw new Error('模型在一次响应中发起了多个工具调用');
-  return calls[0];
-}
-
 function textBlocks(value: unknown, type: string): string {
   return items(value).flatMap((block) => block.type === type && typeof block.text === 'string' ? [block.text] : []).join('\n');
 }
@@ -54,7 +50,7 @@ const chatCompletions: Adapter = {
       ...(effort(settings) ? { reasoning_effort: effort(settings) } : {}),
       ...(includeTools ? {
         tools: openAIFunctions(disableReadScreen).map((definition) => ({ type: 'function', function: definition })),
-        parallel_tool_calls: false, tool_choice: 'auto',
+        tool_choice: 'auto',
       } : {}),
     };
   },
@@ -64,22 +60,24 @@ const chatCompletions: Adapter = {
       throw new Error('Chat Completions 的响应未完成');
     }
     const message = object(choice.message);
-    const calls = message.tool_calls === undefined || message.tool_calls === null ? [] : items(message.tool_calls);
-    const call = onlyCall(calls);
-    if (Boolean(call) !== (choice.finish_reason === 'tool_calls')) throw new Error('Chat Completions 的工具调用不完整');
-    const invocation = call && object(call.function);
+    const invocations = message.tool_calls == null ? [] : items(message.tool_calls);
+    if ((invocations.length > 0) !== (choice.finish_reason === 'tool_calls')) throw new Error('Chat Completions 的工具调用不完整');
+    const calls = invocations.map((invocation) => {
+      const fn = object(invocation.function);
+      return tool(invocation.id, fn.name, fn.arguments, true);
+    });
     const text = typeof message.content === 'string' ? message.content : typeof message.refusal === 'string' ? message.refusal : '';
     const history = [{
-      role: 'assistant', content: message.content ?? (call ? null : text),
-      ...(call ? { tool_calls: calls } : {}),
+      role: 'assistant', content: message.content ?? (calls.length ? null : text),
+      ...(calls.length ? { tool_calls: invocations } : {}),
       ...(message.reasoning_content ? { reasoning_content: message.reasoning_content } : {}),
     }];
-    return { history, text, call: call && invocation ? tool(call.id, invocation.name, invocation.arguments, true) : undefined };
+    return { history, text, calls };
   },
-  result(call, result) {
-    const history: Item[] = [{ role: 'tool', tool_call_id: call.id, content: result.text }];
-    if (result.image) {
-      history.push({ role: 'user', content: [
+  results(calls) {
+    const history: Item[] = calls.map(({ call, result }) => ({ role: 'tool', tool_call_id: call.id, content: result.text }));
+    for (const { result } of calls) {
+      if (result.image) history.push({ role: 'user', content: [
         { type: 'text', text: screenshotPrompt },
         { type: 'image_url', image_url: { url: result.image, detail: 'auto' } },
       ] });
@@ -87,6 +85,47 @@ const chatCompletions: Adapter = {
     return history;
   },
 };
+
+function isEmptyResponseMessage(item: Item): boolean {
+  return item.type === 'message' && item.role === 'assistant' && Array.isArray(item.content) &&
+    item.content.every((part: unknown) => isRecord(part) && part.type === 'output_text' &&
+      (part.text === undefined || part.text === '') &&
+      (part.annotations === undefined || (Array.isArray(part.annotations) && !part.annotations.length)));
+}
+
+function repairSplitResponseCalls(output: Item[]): Item[] {
+  const nonEmpty = output.filter((item) => !isEmptyResponseMessage(item));
+  const history: Item[] = [];
+  for (let index = 0; index < nonEmpty.length; index++) {
+    const item = nonEmpty[index];
+    history.push(item);
+    if (item.type !== 'function_call' || item.status !== 'completed' ||
+        typeof item.name !== 'string' || !item.name || typeof item.call_id !== 'string' || !item.call_id ||
+        typeof item.arguments !== 'string' || !item.arguments.trimStart().startsWith('{')) continue;
+
+    // Some Responses endpoints split a single JSON object into separate function_call items.
+    const fragments = [item.arguments];
+    let next = index + 1;
+    for (; next < nonEmpty.length; next++) {
+      const fragment = nonEmpty[next];
+      if (fragment.type !== 'function_call' || fragment.status !== 'completed' ||
+          fragment.call_id != null || fragment.name != null ||
+          typeof fragment.arguments !== 'string' || !fragment.arguments.trim()) break;
+      fragments.push(fragment.arguments);
+    }
+    if (fragments.length === 1) continue;
+
+    const args = fragments.join('');
+    try {
+      if (!isRecord(JSON.parse(args))) continue;
+    } catch {
+      continue;
+    }
+    history[history.length - 1] = { ...item, arguments: args };
+    index = next - 1;
+  }
+  return history.length < nonEmpty.length ? history : output;
+}
 
 const responses: Adapter = {
   request(settings, instructions, input, includeTools, disableReadScreen) {
@@ -97,7 +136,7 @@ const responses: Adapter = {
       include: ['reasoning.encrypted_content'],
       ...(summary || level ? { reasoning: { ...(summary ? { summary: 'auto' } : {}), ...(level ? { effort: level } : {}) } } : {}),
       ...(includeTools ? {
-        parallel_tool_calls: false, tools: openAIFunctions(disableReadScreen).map((definition) => ({ type: 'function', ...definition })),
+        tools: openAIFunctions(disableReadScreen).map((definition) => ({ type: 'function', ...definition })),
         tool_choice: 'auto',
       } : {}),
     };
@@ -105,8 +144,11 @@ const responses: Adapter = {
   read(value) {
     const response = object(value);
     if (response.status !== 'completed') throw new Error('Responses 的响应未完成');
-    const history = items(response.output);
-    const invocation = onlyCall(history.filter((item) => item.type === 'function_call'));
+    const history = repairSplitResponseCalls(items(response.output));
+    const calls = history.filter((item) => item.type === 'function_call').map((item) => {
+      if (typeof item.call_id !== 'string' || !item.call_id) throw new Error('Responses 的工具调用缺少 call_id');
+      return tool(item.call_id, item.name, item.arguments, true);
+    });
     const text = history.flatMap((item) => {
       if (item.type !== 'message') return [];
       return items(item.content).flatMap((block) => {
@@ -115,13 +157,13 @@ const responses: Adapter = {
         return [];
       });
     }).join('\n');
-    return { history, text, call: invocation && tool(invocation.call_id, invocation.name, invocation.arguments, true) };
+    return { history, text, calls };
   },
-  result(call, result) {
-    return [{
+  results(calls) {
+    return calls.map(({ call, result }) => ({
       type: 'function_call_output', call_id: call.id,
       output: result.image ? [{ type: 'input_image', image_url: result.image, detail: 'auto' }] : result.text,
-    }];
+    }));
   },
 };
 
@@ -137,7 +179,7 @@ const anthropicMessages: Adapter = {
       ...(level ? { output_config: { effort: level } } : {}),
       ...(includeTools ? {
         tools: toolsForLevel(disableReadScreen).map(({ name, description, parameters }) => ({ name, description, input_schema: parameters })),
-        tool_choice: { type: 'auto', disable_parallel_tool_use: true },
+        tool_choice: { type: 'auto' },
       } : {}),
     };
   },
@@ -148,21 +190,23 @@ const anthropicMessages: Adapter = {
       throw new Error('Anthropic Messages 的响应未完成');
     }
     const content = items(response.content);
-    const invocation = onlyCall(content.filter((item) => item.type === 'tool_use'));
-    if (Boolean(invocation) !== (reason === 'tool_use')) throw new Error('Anthropic Messages 的工具调用不完整');
+    const calls = content.filter((item) => item.type === 'tool_use')
+      .map((item) => tool(item.id, item.name, item.input, false));
+    if ((calls.length > 0) !== (reason === 'tool_use')) throw new Error('Anthropic Messages 的工具调用不完整');
     return {
       history: [{ role: 'assistant', content }], text: textBlocks(content, 'text'),
-      call: invocation && tool(invocation.id, invocation.name, invocation.input, false),
+      calls,
     };
   },
-  result(call, result) {
-    const content = result.image ? [{
-      type: 'image', source: { type: 'base64', media_type: 'image/png', data: result.image.slice('data:image/png;base64,'.length) },
-    }] : result.text;
-    return [{ role: 'user', content: [{
-      type: 'tool_result', tool_use_id: call.id, content,
+  results(calls) {
+    const content = calls.map(({ call, result }) => ({
+      type: 'tool_result', tool_use_id: call.id,
+      content: result.image ? [{
+        type: 'image', source: { type: 'base64', media_type: 'image/png', data: result.image.slice('data:image/png;base64,'.length) },
+      }] : result.text,
       ...(result.error ? { is_error: true } : {}),
-    }] }];
+    }));
+    return [{ role: 'user', content }];
   },
 };
 
@@ -182,20 +226,21 @@ const ollamaChat: Adapter = {
       throw new Error('Ollama Chat 的响应未完成');
     }
     const message = object(response.message);
-    const calls = message.tool_calls == null ? [] : items(message.tool_calls);
-    const invocation = onlyCall(calls);
-    const fn = invocation && object(invocation.function);
+    const invocations = message.tool_calls == null ? [] : items(message.tool_calls);
     const text = string(message.content);
     return {
       history: [{ role: 'assistant', ...message }], text,
-      call: fn && tool('ollama-tool-call', fn.name, fn.arguments, false),
+      calls: invocations.map((invocation, index) => {
+        const fn = object(invocation.function);
+        return tool(`ollama-tool-call-${index}`, fn.name, fn.arguments, false);
+      }),
       inputTokens: tokens(response.prompt_eval_count),
     };
   },
-  result(call, result) {
-    const history: Item[] = [{ role: 'tool', tool_name: call.name, content: result.text }];
-    if (result.image) {
-      history.push({
+  results(calls) {
+    const history: Item[] = calls.map(({ call, result }) => ({ role: 'tool', tool_name: call.name, content: result.text }));
+    for (const { result } of calls) {
+      if (result.image) history.push({
         role: 'user', content: screenshotPrompt,
         images: [result.image.slice('data:image/png;base64,'.length)],
       });
@@ -261,9 +306,8 @@ function chatStream(emit: EmitDelta): Accumulator {
       }
     },
     finish() {
-      const message = {
-        content: content || null, refusal, reasoning_content: reasoning, tool_calls: [...calls.values()],
-      };
+      const tool_calls = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call);
+      const message = { content: content || null, refusal, reasoning_content: reasoning, tool_calls };
       return { ...chatCompletions.read({ choices: [{ message, finish_reason: finishReason }] }), inputTokens };
     },
   };
@@ -296,9 +340,9 @@ function anthropicStream(emit: EmitDelta): Accumulator {
   const blocks = new Map<number, Item>();
   const openBlocks = new Set<number>();
   const partialInput = new Map<number, string>();
+  const invalidToolInputs = new Map<unknown, string>();
   const inputFields = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
   const reported = new Map<string, number>();
-  let invalidToolInput: { id: unknown; args: string } | undefined;
   let stopReason: unknown;
   let stopped = false;
   return {
@@ -347,7 +391,7 @@ function anthropicStream(emit: EmitDelta): Accumulator {
             block.input = JSON.parse(json);
           } catch {
             // Keep the initial input in history so a tool error can be sent back to the model.
-            invalidToolInput = { id: block.id, args: json };
+            invalidToolInputs.set(block.id, json);
           }
         }
         partialInput.delete(index);
@@ -359,10 +403,11 @@ function anthropicStream(emit: EmitDelta): Accumulator {
       const content = [...blocks.entries()].sort(([a], [b]) => a - b).map(([, block]) => block);
       const inputTokens = tokens([...reported.values()].reduce((sum, count) => sum + count, 0));
       const reply = anthropicMessages.read({ content, stop_reason: stopReason });
-      if (reply.call && invalidToolInput && reply.call.id === invalidToolInput.id) {
-        reply.call = { ...reply.call, args: invalidToolInput.args, serialized: true };
-      }
-      return { ...reply, inputTokens };
+      const calls = reply.calls.map((call) => {
+        const args = invalidToolInputs.get(call.id);
+        return args === undefined ? call : { ...call, args, serialized: true };
+      });
+      return { ...reply, calls, inputTokens };
     },
   };
 }

@@ -87,6 +87,7 @@ export function toolsForLevel(disableReadScreen?: boolean) {
 export const toolMessages = {
   ok: 'Ok',
   interrupted: '动作已中断',
+  notExecuted: '工具调用未执行',
   notFound: 'Error: 工具不存在',
   invalidJSON: '工具参数必须是有效的 JSON',
   invalidReadScreenArgs: 'ReadScreen 只接受空对象',

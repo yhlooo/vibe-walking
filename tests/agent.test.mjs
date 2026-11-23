@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { Agent } from '../src/agent/agent.ts';
 import { defaultPrompt, respawnInfo } from '../src/agent/prompts.ts';
+import { adapters } from '../src/agent/protocols.ts';
 import { protocols } from '../src/agent/settings.ts';
 import { World } from '../src/game/world.ts';
 import { readLevel } from '../src/level/definition.ts';
@@ -10,6 +11,10 @@ import { readLevel } from '../src/level/definition.ts';
 const flatLevel = readLevel(JSON.parse(readFileSync(new URL('./fixtures/legacy-level.json', import.meta.url))));
 const png = 'data:image/png;base64,cG5n';
 const actions = { actions: [{ key: 'moveRight', value: 21 }] };
+const splitReadScreen = [
+  { type: 'function_call', id: 'fc_open', status: 'completed', name: 'ReadScreen', call_id: 'ReadScreen_0_c95fe814', arguments: '{' },
+  { type: 'function_call', id: 'fc_close', status: 'completed', arguments: '}' },
+];
 
 function fixture(protocol, index) {
   const name = index === 1 ? 'ExecActionSequence' : 'ReadScreen';
@@ -43,11 +48,12 @@ function sse(stream) {
 }
 
 function streamedFixture(protocol, index, inputTokens, partialJSON) {
-  const result = fixture(protocol, index);
+  const fixtures = [index].flat().map((entry) => fixture(protocol, entry));
+  const [result] = fixtures;
   if (protocol === 'OllamaChat') {
     const events = [
       { message: { thinking: '先看画面' }, done: false },
-      { message: result.message, done: false },
+      ...fixtures.map(({ message }) => ({ message, done: false })),
       { message: { content: '' }, done: true, done_reason: 'stop', prompt_eval_count: inputTokens },
     ];
     const bytes = new TextEncoder().encode(events.map((event) => JSON.stringify(event)).join('\n'));
@@ -61,14 +67,14 @@ function streamedFixture(protocol, index, inputTokens, partialJSON) {
   let events;
   if (protocol === 'OpenAIChatCompletions') {
     const { finish_reason, message } = result.choices[0];
-    const call = message.tool_calls?.[0];
+    const calls = fixtures.flatMap(({ choices: [choice] }) => choice.message.tool_calls ?? []);
     const chunk = (delta, reason = null) => ({ choices: [{ delta, finish_reason: reason }] });
-    if (call) {
-      const { name, arguments: args } = call.function;
-      events = [
-        chunk({ tool_calls: [{ index: 0, id: call.id, type: 'function', function: { name, arguments: args.slice(0, 1) } }] }),
-        chunk({ tool_calls: [{ index: 0, function: { arguments: args.slice(1) } }] }),
-      ];
+    if (calls.length) {
+      const starts = calls.map(({ id, function: fn }, index) => ({ index, id, type: 'function',
+        function: { name: fn.name, arguments: fn.arguments.slice(0, 1) },
+      }));
+      const ends = calls.map(({ function: fn }, index) => ({ index, function: { arguments: fn.arguments.slice(1) } }));
+      events = [chunk({ tool_calls: starts.reverse() }), chunk({ tool_calls: ends })];
     } else {
       events = [chunk({ content: message.content.slice(0, 4) }), chunk({ content: message.content.slice(4) })];
     }
@@ -79,21 +85,26 @@ function streamedFixture(protocol, index, inputTokens, partialJSON) {
       { type: 'response.output_text.delta', delta: item.content[0].text.slice(0, 4) },
       { type: 'response.output_text.delta', delta: item.content[0].text.slice(4) },
     ] : [];
-    events.push({ type: 'response.completed', response: { ...result, usage: { input_tokens: inputTokens } } });
+    const output = [...result.output.slice(0, -1), ...fixtures.map(({ output }) => output.at(-1))];
+    events.push({ type: 'response.completed', response: { ...result, output, usage: { input_tokens: inputTokens } } });
   } else {
-    const block = result.content[0];
-    const index = 1;
-    const delta = block.type === 'text' ? { type: 'text_delta', text: block.text } :
-      { type: 'input_json_delta', partial_json: partialJSON ?? JSON.stringify(block.input) };
+    const blocks = fixtures.flatMap(({ content }) => content);
     events = [
       { type: 'message_start', message: { usage: { input_tokens: inputTokens } } },
       { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
       { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '先看画面' } },
       { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'opaque-signature' } },
       { type: 'content_block_stop', index: 0 },
-      { type: 'content_block_start', index, content_block: block.type === 'text' ? { ...block, text: '' } : { ...block, input: {} } },
-      { type: 'content_block_delta', index, delta },
-      { type: 'content_block_stop', index },
+      ...blocks.flatMap((block, offset) => {
+        const index = offset + 1;
+        const delta = block.type === 'text' ? { type: 'text_delta', text: block.text } :
+          { type: 'input_json_delta', partial_json: partialJSON?.[offset] ?? JSON.stringify(block.input) };
+        return [
+          { type: 'content_block_start', index, content_block: block.type === 'text' ? { ...block, text: '' } : { ...block, input: {} } },
+          { type: 'content_block_delta', index, delta },
+          { type: 'content_block_stop', index },
+        ];
+      }),
       { type: 'message_delta', delta: { stop_reason: result.stop_reason } },
       { type: 'message_stop' },
     ];
@@ -141,12 +152,13 @@ function verifyImage(protocol, request, id) {
 }
 
 for (const protocol of Object.keys(protocols)) {
-  test(`${protocol} reads the screen, acts, and observes the completed level`, async () => {
+  test(`${protocol} executes a batch in order and returns all results before the next response`, async () => {
     const originalFetch = globalThis.fetch;
     const world = new World(flatLevel);
     const events = [];
     const statesSeen = [];
     const requests = [];
+    const requestOutcomes = [];
     let disableReadScreen = false;
     const prompt = '只属于这张关卡的系统提示词';
     const model = { api: protocol, model: 'mock', baseURL: 'http://unused', hasAPIKey: true,
@@ -156,6 +168,7 @@ for (const protocol of Object.keys(protocols)) {
       readScreen(disabled) { statesSeen.push([world.outcome, disabled]); return png; },
       async whenActive() {},
       async execute(steps) {
+        await Promise.resolve();
         for (const input of steps) {
           let remaining = world.step(input);
           while (remaining > 0 && world.outcome === 'active') {
@@ -172,6 +185,8 @@ for (const protocol of Object.keys(protocols)) {
       const requestPrompt = body.instructions ?? body.system ?? body.messages[0].content;
       assert.equal(requestPrompt, prompt);
       assert.equal(body.stream, true);
+      assert.notEqual(body.parallel_tool_calls, false);
+      assert.notEqual(body.tool_choice?.disable_parallel_tool_use, true);
       const screenTool = body.tools[0].function ?? body.tools[0];
       assert.equal(screenTool.name, 'ReadScreen');
       assert.equal(screenTool.description, disableReadScreen
@@ -182,18 +197,46 @@ for (const protocol of Object.keys(protocols)) {
         assert.equal(body.think, true);
       }
       requests.push(body);
+      requestOutcomes.push(world.outcome);
       if (requests.length === 2) disableReadScreen = true;
-      return streamedFixture(protocol, requests.length - 1);
+      return streamedFixture(protocol, requests.length === 1 ? [0, 1] : requests.length);
     };
     try {
       await agent.send('先读图，再走到按钮。');
-      assert.equal(requests.length, 4);
-      verifyImage(protocol, requests[1], 'call_0');
-      verifyImage(protocol, requests[3], 'call_2');
+      assert.equal(requests.length, 3);
+      assert.deepEqual(requestOutcomes, ['active', 'won', 'won']);
+      const batch = requests[1];
+      if (protocol === 'OpenAIResponses') {
+        assert.deepEqual(batch.input.slice(-4).map(({ type, call_id }) => [type, call_id]), [
+          ['function_call', 'call_0'], ['function_call', 'call_1'],
+          ['function_call_output', 'call_0'], ['function_call_output', 'call_1'],
+        ]);
+        assert.deepEqual(batch.input.at(-2).output, [{ type: 'input_image', image_url: png, detail: 'auto' }]);
+        assert.equal(batch.input.at(-1).output, 'Ok');
+      } else if (protocol === 'AnthropicMessages') {
+        verifyImage(protocol, batch, 'call_0');
+        assert.deepEqual(batch.messages.at(-2).content.slice(1).map(({ id }) => id), ['call_0', 'call_1']);
+        assert.equal(batch.messages.at(-1).content.length, 2);
+        assert.deepEqual(batch.messages.at(-1).content[1], { type: 'tool_result', tool_use_id: 'call_1', content: 'Ok' });
+      } else {
+        const [assistant, screen, action, screenshot] = batch.messages.slice(-4);
+        assert.deepEqual(assistant.tool_calls.map(({ function: fn }) => fn.name), ['ReadScreen', 'ExecActionSequence']);
+        assert.deepEqual([screen, action], protocol === 'OllamaChat' ? [
+          { role: 'tool', tool_name: 'ReadScreen', content: 'Ok' },
+          { role: 'tool', tool_name: 'ExecActionSequence', content: 'Ok' },
+        ] : [
+          { role: 'tool', tool_call_id: 'call_0', content: 'Ok' },
+          { role: 'tool', tool_call_id: 'call_1', content: 'Ok' },
+        ]);
+        assert.equal(screenshot.role, 'user');
+        if (protocol === 'OllamaChat') assert.deepEqual(screenshot.images, ['cG5n']);
+        else assert.equal(screenshot.content[1].image_url.url, png);
+      }
+      verifyImage(protocol, requests[2], 'call_2');
       assert.deepEqual(statesSeen, [['active', false], ['won', true]]);
       const expected = ['player', 'tool', 'tool', 'tool', 'assistant'];
       if (protocol === 'AnthropicMessages' || protocol === 'OllamaChat') {
-        assert.equal(events.filter((event) => event.kind === 'thinking').length, 4);
+        assert.equal(events.filter((event) => event.kind === 'thinking').length, 3);
       }
       assert.deepEqual(events.filter((event) => event.kind !== 'thinking').map((event) => event.kind), expected);
       assert.deepEqual(events.filter((event) => event.kind === 'tool'), [
@@ -290,16 +333,17 @@ test('a hidden victory notice reaches the model and stays in history after switc
     ['先看一眼。', notice, '接下来呢？']);
 });
 
-test('invalid Anthropic tool JSON still produces a failure for the named tool', async (t) => {
+test('invalid Anthropic tool JSON fails each affected call and allows the remaining call', async (t) => {
   const requests = [];
   const conversation = { events: [], history: [] };
   t.mock.method(globalThis, 'fetch', async (_url, request) => {
     requests.push(JSON.parse(request.body));
-    return streamedFixture('AnthropicMessages', requests.length === 1 ? 0 : 3, undefined, '{broken');
+    return streamedFixture('AnthropicMessages', requests.length === 1 ? [0, 1, 2] : 3, undefined, ['{broken', '[broken']);
   });
   const agent = new Agent({ api: 'AnthropicMessages', model: 'mock', baseURL: '' }, '', {
     whenActive: async () => {},
-    readScreen: () => assert.fail('unexpected screenshot'),
+    readScreen: () => png,
+    execute: async () => assert.fail('invalid action must not execute'),
     outcome: () => 'active',
   }, () => {}, conversation);
 
@@ -308,10 +352,117 @@ test('invalid Anthropic tool JSON still produces a failure for the named tool', 
   const detail = '工具参数必须是有效的 JSON';
   assert.deepEqual(conversation.events.filter(({ kind }) => kind === 'tool'), [
     { kind: 'tool', text: '查看画面失败', detail },
+    { kind: 'tool', text: '执行动作失败', detail },
+    { kind: 'tool', text: '看了一眼', image: png },
   ]);
   assert.deepEqual(requests[1].messages.at(-1).content, [
     { type: 'tool_result', tool_use_id: 'call_0', is_error: true, content: `Error: ${detail}` },
+    { type: 'tool_result', tool_use_id: 'call_1', is_error: true, content: `Error: ${detail}` },
+    { type: 'tool_result', tool_use_id: 'call_2', content: [
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'cG5n' } },
+    ] },
   ]);
+});
+
+test('a split ReadScreen in Responses executes once and sends repaired history upstream', async (t) => {
+  const requests = [];
+  const placeholder = { type: 'message', role: 'assistant', content: [{ type: 'output_text', annotations: [] }] };
+  const reasoning = { type: 'reasoning', id: 'rs_original', summary: [{ type: 'summary_text', text: '先看画面' }] };
+  const [opening, closing] = splitReadScreen;
+  const output = [reasoning, placeholder, opening, placeholder, closing, placeholder];
+  t.mock.method(globalThis, 'fetch', async (_url, request) => {
+    requests.push(JSON.parse(request.body));
+    if (requests.length > 1) return streamedFixture('OpenAIResponses', 3);
+    const events = [
+      { type: 'response.function_call_arguments.delta', output_index: 4, item_id: closing.id, delta: '}' },
+      { type: 'response.function_call_arguments.done', output_index: 4, item_id: closing.id, arguments: '}' },
+      { type: 'response.output_item.done', output_index: 4, item: closing },
+      { type: 'response.completed', response: { model: 'kimi-k3.1-pro', status: 'completed', output } },
+    ];
+    return sse(new ReadableStream({
+      start(controller) {
+        for (const event of events) controller.enqueue(eventBytes(event));
+        controller.close();
+      },
+    }));
+  });
+  const conversation = { events: [], history: [] };
+  const agent = new Agent({ api: 'OpenAIResponses', model: 'kimi-k3.1-pro', baseURL: '' }, '', {
+    whenActive: async () => {},
+    readScreen: () => png,
+    execute: async () => assert.fail('unexpected action'),
+    outcome: () => 'active',
+  }, () => {}, conversation);
+
+  await agent.send('看一眼');
+
+  assert.deepEqual(requests[1].input, [
+    { role: 'user', content: '看一眼' },
+    reasoning,
+    { ...opening, arguments: '{}' },
+    { type: 'function_call_output', call_id: opening.call_id, output: [{ type: 'input_image', image_url: png, detail: 'auto' }] },
+  ]);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(conversation.events.map(({ kind }) => kind), ['player', 'tool', 'assistant']);
+});
+
+test('Responses reassembles a split action sequence before executing the next identified call', async (t) => {
+  const [opening, closing] = splitReadScreen;
+  const action = { ...opening, name: 'ExecActionSequence', call_id: 'action_call' };
+  const body = { ...closing, id: 'fc_body', arguments: '"actions": [{"key":"moveRight","value":1.5},' +
+    '{"key":"jump"},{"key":"moveRight","value":2.5},{"key":"sleep","value":0.5}]' };
+  const placeholder = { type: 'message', role: 'assistant', content: [{ type: 'output_text', annotations: [] }] };
+  const screen = { ...opening, id: 'fc_screen', arguments: '{}' };
+  const output = [placeholder, action, placeholder, body, placeholder, closing, placeholder, screen];
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (_url, request) => {
+    requests.push(JSON.parse(request.body));
+    if (requests.length > 1) return streamedFixture('OpenAIResponses', 3);
+    return sse(eventBytes({ type: 'response.completed', response: { status: 'completed', output } }));
+  });
+  const execution = [];
+  const conversation = { events: [], history: [] };
+  const agent = new Agent({ api: 'OpenAIResponses', model: 'kimi-k3.1-pro', baseURL: '' }, '', {
+    whenActive: async () => {},
+    async execute(steps) {
+      assert.deepEqual(steps.slice(0, 3), [
+        { direction: 1, jump: false, distance: 1.5 },
+        { direction: 1, jump: true, distance: 2.5 },
+        { direction: 0, jump: false },
+      ]);
+      await Promise.resolve();
+      execution.push('action');
+    },
+    readScreen() { execution.push('screen'); return png; },
+    outcome: () => 'active',
+  }, () => {}, conversation);
+
+  await agent.send('向右跳');
+
+  assert.deepEqual(execution, ['action', 'screen']);
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests[1].input.slice(1), [
+    { ...action, arguments: `{${body.arguments}}` },
+    screen,
+    { type: 'function_call_output', call_id: action.call_id, output: 'Ok' },
+    { type: 'function_call_output', call_id: screen.call_id, output: [{ type: 'input_image', image_url: png, detail: 'auto' }] },
+  ]);
+  assert.ok(!conversation.events.some(({ kind }) => kind === 'error'));
+});
+
+test('Responses keeps distinct calls and rejects ambiguous or invalid fragments', () => {
+  const read = (output) => adapters.OpenAIResponses.read({ status: 'completed', output });
+  const [opening, closing] = splitReadScreen;
+  const named = { ...closing, name: 'ReadScreen', call_id: 'second_call', arguments: '{}' };
+  const distinct = [{ ...opening, arguments: '{}' }, named];
+  assert.deepEqual(read(distinct).calls.map(({ id }) => id), [opening.call_id, named.call_id]);
+  assert.deepEqual(read(distinct).history, distinct);
+
+  const text = { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '先等等' }] };
+  assert.throws(() => read([opening, text, closing]), /缺少 call_id/);
+  assert.throws(() => read([opening, named, closing]), /缺少 call_id/);
+  assert.throws(() => read([opening, { ...closing, arguments: '"actions":' }]), /缺少 call_id/);
+  assert.throws(() => read([opening, closing, { ...closing, id: 'fc_extra' }]), /缺少 call_id/);
 });
 
 test('a game turn executes tools past the former request limit until a response has no call', async (t) => {
@@ -461,18 +612,19 @@ test('interrupting a streaming turn keeps partial reasoning and text and persona
   assert.equal(requests[2].input.at(-1).content, '然后呢');
 });
 
-test('interrupting an active tool cancels motion and replays a paired tool result', async (t) => {
+test('interrupting a batch retains completed results and cancels active and queued calls', async (t) => {
   const requests = [];
   let startAction;
   const acting = new Promise((resolve) => { startAction = resolve; });
   let stopped = false;
+  let screenshots = 0;
   t.mock.method(globalThis, 'fetch', async (_url, request) => {
     requests.push(JSON.parse(request.body));
-    return streamedFixture('OpenAIChatCompletions', requests.length === 1 ? 1 : 3);
+    return streamedFixture('OpenAIChatCompletions', requests.length === 1 ? [0, 1, 2] : 3);
   });
   const agent = new Agent({ api: 'OpenAIChatCompletions', model: 'mock', baseURL: '' }, '', {
     whenActive: async () => {},
-    readScreen: () => assert.fail('unexpected screenshot'),
+    readScreen: () => { screenshots++; return png; },
     execute: async (_steps, signal) => new Promise((_, reject) => {
       signal.addEventListener('abort', () => { stopped = true; reject(signal.reason); }, { once: true });
       startAction();
@@ -484,10 +636,16 @@ test('interrupting an active tool cancels motion and replays a paired tool resul
   agent.interrupt();
   await pending;
   assert.equal(stopped, true);
+  assert.equal(screenshots, 1);
   assert.equal(requests.length, 1);
   await agent.send('停');
-  assert.equal(requests[1].messages[2].tool_calls[0].id, 'call_1');
-  assert.deepEqual(requests[1].messages[3], { role: 'tool', tool_call_id: 'call_1', content: '动作已中断' });
+  assert.deepEqual(requests[1].messages[2].tool_calls.map(({ id }) => id), ['call_0', 'call_1', 'call_2']);
+  assert.deepEqual(requests[1].messages.slice(3, 6), [
+    { role: 'tool', tool_call_id: 'call_0', content: 'Ok' },
+    { role: 'tool', tool_call_id: 'call_1', content: '动作已中断' },
+    { role: 'tool', tool_call_id: 'call_2', content: '工具调用未执行' },
+  ]);
+  assert.equal(requests[1].messages[6].content[1].image_url.url, png);
 });
 
 test('reported input usage triggers streamed compression and keeps the new instruction verbatim', async (t) => {
