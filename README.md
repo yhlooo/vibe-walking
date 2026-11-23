@@ -1,6 +1,6 @@
 # VIBE WALKING
 
-用自然语言引导 Vibe 踩下红色按钮（ Vibe 是画面中的白色方块）
+用自然语言引导 Vibe 踩下红色按钮（ Vibe 是画面中的白色方块，双关： Vibe Walking ， Vibe 在 Walking ）
 
 ![第一关游戏画面，左侧是白色方块 Vibe，右侧是红色按钮](docs/usage/images/gameplay.png)
 
@@ -29,6 +29,7 @@ Windows（PowerShell）
 - OpenAI Chat Completions API
 - OpenAI Responses API (推荐)
 - Anthropic Messages API
+- Ollama Chat API
 
 要求模型支持视觉理解。
 
