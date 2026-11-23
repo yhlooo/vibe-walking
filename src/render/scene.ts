@@ -31,20 +31,14 @@ export function drawScene(
   context.setTransform(width / columns, 0, 0, height / rows, 0, 0);
 
   const background = context.createLinearGradient(0, 0, 0, rows);
-  background.addColorStop(0, '#24213e');
-  background.addColorStop(1, '#423b6c');
+  background.addColorStop(0, '#030207');
+  background.addColorStop(0.5, '#100e1f');
+  background.addColorStop(1, '#161227');
   context.fillStyle = background;
   context.fillRect(0, 0, columns, rows);
 
   if (preview) {
-    context.fillStyle = '#a698e108';
-    context.beginPath();
-    context.moveTo(0, 0);
-    context.lineTo(columns * 0.25, 0);
-    context.lineTo(columns * 0.5, rows);
-    context.lineTo(0, rows);
-    context.fill();
-    context.fillStyle = '#a698e10c';
+    context.fillStyle = '#a698e111';
     context.beginPath();
     context.moveTo(columns * 0.75, 0);
     context.lineTo(columns, 0);
@@ -58,7 +52,7 @@ export function drawScene(
       if (row[x] === '#') {
         context.fillStyle = '#1a192c';
         context.fillRect(x, y, 1, 1);
-        context.fillStyle = '#29263e';
+        context.fillStyle = '#332f47';
         context.fillRect(x + 0.025, y + 0.025, 0.95, 0.95);
         if (level.tiles[y - 1]?.[x] !== '#') {
           context.fillStyle = '#72639c';
