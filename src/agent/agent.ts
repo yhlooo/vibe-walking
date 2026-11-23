@@ -30,7 +30,7 @@ export const defaultPrompt = `## 你是谁
 
 与你对话的人叫 {{user}} ，他将指导你在这个世界中的行动。目前来看，你或许应该信任这个人？`;
 
-export const respawnInfo = '<system-info>你刚刚跌落悬崖，现在游戏重新开始了</system-info>';
+export const respawnInfo = '<system-info>你刚刚坠入虚空，一阵眩晕之后，现在回到了原位置</system-info>';
 
 const interruptionInfo = '<system-info>{{user}} 刚刚中断了你的行动，以下是 ta 的新指示</system-info>';
 
@@ -157,7 +157,7 @@ export class Agent {
     const usageKey = JSON.stringify([protocol, this.model.baseURL, this.model.model, this.model.reasoningEffort, prompt]);
     let compressionFailed = false;
     try {
-      for (let request = 0; request < 8; request++) {
+      while (true) {
         await this.tools.whenActive(signal);
         signal.throwIfAborted();
         let estimate = estimateContext(prompt, history);
@@ -183,8 +183,7 @@ export class Agent {
             this.emit({ kind: 'error', text: `无法压缩对话上下文：${message(error)}` });
           }
         }
-        const toolsEnabled = request < 7;
-        const reply = await this.generate(prompt, history, toolsEnabled ? 'auto' : 'none', signal, onDelta);
+        const reply = await this.generate(prompt, history, true, signal, onDelta);
         signal.throwIfAborted();
         if (reply.inputTokens) conversation.usage = { key: usageKey, estimate, tokens: reply.inputTokens };
         if (!output.some((event) => event.kind === 'assistant')) onDelta('assistant', reply.text);
@@ -193,7 +192,6 @@ export class Agent {
           output = [];
           return;
         }
-        if (!toolsEnabled) throw new Error('模型在回合结束时仍请求执行工具');
         completedTool = { history: reply.history, call: reply.call };
         await this.tools.whenActive(signal);
         signal.throwIfAborted();
@@ -227,7 +225,7 @@ export class Agent {
       const chunk = transcript.slice(start, start + chunkSize).join('');
       const reply = await this.generate(instruction, [{
         role: 'user', content: summary ? `上一段摘要：\n${summary}\n\n后续记录：\n${chunk}` : chunk,
-      }], 'omit', signal, () => {});
+      }], false, signal, () => {});
       if (!reply.text.trim()) throw new Error('模型未返回摘要');
       summary = reply.text.trim();
     }
@@ -235,12 +233,12 @@ export class Agent {
   }
 
   private async generate(
-    prompt: string, history: Record<string, unknown>[], tools: 'auto' | 'none' | 'omit',
+    prompt: string, history: Record<string, unknown>[], includeTools: boolean,
     signal: AbortSignal, emit: (kind: OutputKind, text: string) => void,
   ) {
     signal.throwIfAborted();
     const protocol = this.model.api;
-    const body = adapters[protocol].request(this.model, prompt, history, tools);
+    const body = adapters[protocol].request(this.model, prompt, history, includeTools);
     const idle = new AbortController();
     const requestSignal = AbortSignal.any([signal, idle.signal]);
     let timer: ReturnType<typeof setTimeout>;

@@ -10,7 +10,7 @@ type EmitDelta = (kind: OutputKind, text: string) => void;
 type Accumulator = { push(event: Item): boolean | void; finish(): Reply };
 
 type Adapter = {
-  request(settings: ModelSettings, prompt: string, history: Item[], tools: 'auto' | 'none' | 'omit'): Item;
+  request(settings: ModelSettings, prompt: string, history: Item[], includeTools: boolean): Item;
   read(value: unknown): Reply;
   result(call: ToolCall, value: ToolResult): Item[];
 };
@@ -67,14 +67,14 @@ function textBlocks(value: unknown, type: string): string {
 }
 
 const chatCompletions: Adapter = {
-  request(settings, prompt, history, tools) {
+  request(settings, prompt, history, includeTools) {
     return {
       model: settings.model, messages: [{ role: 'developer', content: prompt }, ...history], stream: true,
       stream_options: { include_usage: true },
       ...(effort(settings) ? { reasoning_effort: effort(settings) } : {}),
-      ...(tools !== 'omit' ? {
+      ...(includeTools ? {
         tools: openAIFunctions.map((definition) => ({ type: 'function', function: definition })),
-        parallel_tool_calls: false, tool_choice: tools,
+        parallel_tool_calls: false, tool_choice: 'auto',
       } : {}),
     };
   },
@@ -109,16 +109,16 @@ const chatCompletions: Adapter = {
 };
 
 const responses: Adapter = {
-  request(settings, instructions, input, tools) {
+  request(settings, instructions, input, includeTools) {
     const level = effort(settings);
     const summary = level !== 'none' && (level || /^(?:o[1-9](?:-|$)|gpt-[5-9](?:[.-]|$))/.test(settings.model));
     return {
       model: settings.model, instructions, input, store: false, stream: true,
       include: ['reasoning.encrypted_content'],
       ...(summary || level ? { reasoning: { ...(summary ? { summary: 'auto' } : {}), ...(level ? { effort: level } : {}) } } : {}),
-      ...(tools !== 'omit' ? {
+      ...(includeTools ? {
         parallel_tool_calls: false, tools: openAIFunctions.map((definition) => ({ type: 'function', ...definition })),
-        tool_choice: tools,
+        tool_choice: 'auto',
       } : {}),
     };
   },
@@ -146,7 +146,7 @@ const responses: Adapter = {
 };
 
 const anthropicMessages: Adapter = {
-  request(settings, system, messages, tools) {
+  request(settings, system, messages, includeTools) {
     const level = effort(settings);
     const officialEndpoint = /^https:\/\/api\.anthropic\.com(?:\/|$)/i.test(settings.baseURL);
     const adaptive = (level && !officialEndpoint) ||
@@ -155,9 +155,9 @@ const anthropicMessages: Adapter = {
       model: settings.model, system, messages, max_tokens: adaptive ? 16384 : 4096, stream: true,
       ...(adaptive ? { thinking: { type: 'adaptive', display: 'summarized' } } : {}),
       ...(level ? { output_config: { effort: level } } : {}),
-      ...(tools !== 'omit' ? {
+      ...(includeTools ? {
         tools: functions.map(({ name, description, parameters }) => ({ name, description, input_schema: parameters })),
-        tool_choice: tools === 'auto' ? { type: 'auto', disable_parallel_tool_use: true } : { type: 'none' },
+        tool_choice: { type: 'auto', disable_parallel_tool_use: true },
       } : {}),
     };
   },

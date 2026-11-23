@@ -158,6 +158,44 @@ for (const protocol of Object.keys(protocols)) {
   });
 }
 
+test('a game turn executes tools past the former request limit until a response has no call', async (t) => {
+  const toolCount = 10;
+  const requests = [];
+  const conversation = { events: [], history: [] };
+  let screensRead = 0;
+  t.mock.method(globalThis, 'fetch', async (_url, request) => {
+    requests.push(JSON.parse(request.body));
+    const index = requests.length;
+    assert.ok(index <= toolCount + 1, 'the turn should end after the response without a call');
+    const output = index <= toolCount
+      ? [{ type: 'function_call', name: 'ReadScreen', call_id: `call_${index}`, arguments: '{}' }]
+      : [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '看完了。' }] }];
+    if (index === 8) output.unshift({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: '再看一眼。' }] });
+    return sse(eventBytes({ type: 'response.completed', response: { status: 'completed', output } }));
+  });
+  const agent = new Agent({ api: 'OpenAIResponses', model: 'mock', baseURL: '' }, '', {
+    whenActive: async () => {},
+    readScreen() { screensRead++; return png; },
+    execute: async () => assert.fail('unexpected action'),
+    outcome: () => 'active',
+  }, () => {}, conversation);
+
+  await agent.send('观察画面。');
+
+  assert.equal(screensRead, toolCount);
+  assert.equal(requests.length, toolCount + 1);
+  for (const [index, request] of requests.entries()) {
+    assert.equal(request.tool_choice, 'auto');
+    if (index > 0) {
+      assert.equal(request.input.at(-1).type, 'function_call_output');
+      assert.equal(request.input.at(-1).call_id, `call_${index}`);
+    }
+  }
+  assert.deepEqual(conversation.events.filter(({ kind }) => kind === 'assistant').map(({ text }) => text),
+    ['再看一眼。', '看完了。']);
+  assert.equal(agent.busy, false);
+});
+
 test('a response arriving after cancellation never schedules an old action', async () => {
   const originalFetch = globalThis.fetch;
   let receive;
