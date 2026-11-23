@@ -1,3 +1,4 @@
+import { toolMessages } from '../agent/prompts.ts';
 import { Recorder } from './actions.ts';
 import { idleInput, stepMS, World } from './world.ts';
 import type { Direction, Outcome, Snapshot, StepInput, WorldState } from './world.ts';
@@ -103,7 +104,7 @@ export class Runtime {
   async execute(steps: StepInput[], signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     if (this.manual || this.sequence || !steps.length || this.world.outcome !== 'active') {
-      throw new Error('当前无法执行动作');
+      throw new Error(toolMessages.cannotExecute);
     }
     const cancel = () => this.cancelSequence();
     signal?.addEventListener('abort', cancel, { once: true });
@@ -115,7 +116,7 @@ export class Runtime {
   }
 
   cancelSequence() {
-    this.sequence?.reject(new DOMException('动作已取消', 'AbortError'));
+    this.sequence?.reject(new DOMException(toolMessages.cancelled, 'AbortError'));
     this.sequence = undefined;
   }
 

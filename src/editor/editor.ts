@@ -1,4 +1,4 @@
-import { defaultPrompt } from '../agent/agent.ts';
+import { defaultPrompt } from '../agent/prompts.ts';
 import { findButton, gridSize, gridSizes, playableError, readLevel, resizeLevel } from '../level/definition.ts';
 import type { LevelDefinition, Point, Tile } from '../level/definition.ts';
 import { exportLevel, importLevel, maxLevelBytes } from '../level/json.ts';

@@ -1,3 +1,4 @@
+import { toolMessages } from '../agent/prompts.ts';
 import { gridSize } from '../level/definition.ts';
 import type { Point } from '../level/definition.ts';
 import type { Snapshot } from '../game/world.ts';
@@ -25,7 +26,7 @@ export function drawScene(
     canvas.height = pixelHeight;
   }
   const context = canvas.getContext('2d');
-  if (!context) throw new Error('当前浏览器无法创建游戏画面');
+  if (!context) throw new Error(toolMessages.cannotDrawScreen);
   const { width, height } = canvas;
   context.setTransform(width / columns, 0, 0, height / rows, 0, 0);
 

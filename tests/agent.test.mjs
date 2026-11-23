@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { Agent, defaultPrompt, respawnInfo } from '../src/agent/agent.ts';
+import { Agent } from '../src/agent/agent.ts';
+import { defaultPrompt, respawnInfo } from '../src/agent/prompts.ts';
 import { protocols } from '../src/agent/settings.ts';
 import { World } from '../src/game/world.ts';
 import { readLevel } from '../src/level/definition.ts';
@@ -41,7 +42,7 @@ function sse(stream) {
   return new Response(stream, { headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } });
 }
 
-function streamedFixture(protocol, index, inputTokens) {
+function streamedFixture(protocol, index, inputTokens, partialJSON) {
   const result = fixture(protocol, index);
   if (protocol === 'OllamaChat') {
     const events = [
@@ -83,7 +84,7 @@ function streamedFixture(protocol, index, inputTokens) {
     const block = result.content[0];
     const index = 1;
     const delta = block.type === 'text' ? { type: 'text_delta', text: block.text } :
-      { type: 'input_json_delta', partial_json: JSON.stringify(block.input) };
+      { type: 'input_json_delta', partial_json: partialJSON ?? JSON.stringify(block.input) };
     events = [
       { type: 'message_start', message: { usage: { input_tokens: inputTokens } } },
       { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
@@ -167,12 +168,7 @@ for (const protocol of Object.keys(protocols)) {
       assert.equal(request.headers.Authorization, undefined);
       const body = JSON.parse(request.body);
       const requestPrompt = body.instructions ?? body.system ?? body.messages[0].content;
-      if (world.outcome === 'won') {
-        assert.ok(requestPrompt.startsWith(prompt));
-        assert.match(requestPrompt, /关卡已通关.*无法执行动作/);
-      } else {
-        assert.equal(requestPrompt, prompt);
-      }
+      assert.equal(requestPrompt, prompt);
       assert.equal(body.stream, true);
       if (protocol === 'OllamaChat') {
         assert.equal(body.messages[0].role, 'system');
@@ -193,6 +189,11 @@ for (const protocol of Object.keys(protocols)) {
         assert.equal(events.filter((event) => event.kind === 'thinking').length, 4);
       }
       assert.deepEqual(events.filter((event) => event.kind !== 'thinking').map((event) => event.kind), expected);
+      assert.deepEqual(events.filter((event) => event.kind === 'tool'), [
+        { kind: 'tool', text: '看了一眼', image: png },
+        { kind: 'tool', text: '执行动作', detail: '向右移动 21' },
+        { kind: 'tool', text: '看了一眼', image: png },
+      ]);
       assert.equal(world.outcome, 'won');
       assert.equal(agent.busy, false);
     } finally {
@@ -201,6 +202,110 @@ for (const protocol of Object.keys(protocols)) {
     }
   });
 }
+
+test('tool failures keep action descriptions and show raw arguments only for unsupported tools', async (t) => {
+  const sequence = { actions: [{ key: 'moveLeft', value: 1.2 }, { key: 'jump' }, { key: 'sleep', value: 1 },
+    { key: 'moveRight', hold: 0.25 }] };
+  const attemptedActions = '向左移动 1.2\n跳起\n等待 1s\n按住向右 0.25s';
+  const calls = [
+    { name: 'ExecActionSequence', arguments: JSON.stringify(sequence) },
+    { name: 'ExecActionSequence', arguments: JSON.stringify({ actions: [...sequence.actions, { key: 'invalid' }] }) },
+    { name: 'ExecActionSequence', arguments: JSON.stringify(sequence) },
+    { name: 'ReadScreen', arguments: '{' },
+    { name: 'Fly', arguments: ' { "height": 2 } ' },
+    { arguments: '{broken' },
+  ];
+  const conversation = { events: [], history: [] };
+  const titles = [];
+  const results = [];
+  let callIndex = 0;
+  let executions = 0;
+  t.mock.method(globalThis, 'fetch', async (_url, request) => {
+    const lastItem = JSON.parse(request.body).input.at(-1);
+    if (lastItem.type === 'function_call_output') results.push(lastItem.output);
+    const call = calls[callIndex++];
+    const output = call ? [{ type: 'function_call', call_id: `call_${callIndex}`, ...call }] : [];
+    return sse(eventBytes({ type: 'response.completed', response: { status: 'completed', output } }));
+  });
+  const agent = new Agent({ api: 'OpenAIResponses', model: 'mock', baseURL: '' }, '', {
+    whenActive: async () => {},
+    readScreen: () => assert.fail('unexpected screenshot'),
+    async execute() { executions++; throw new Error('当前无法执行动作'); },
+    outcome: () => callIndex >= 3 ? 'won' : 'active',
+  }, (event) => { if (event.kind === 'tool') titles.push(event.text); }, conversation);
+
+  await agent.send('开始');
+
+  assert.equal(executions, 1);
+  assert.deepEqual(titles.slice(0, 2), ['执行动作', '执行动作失败']);
+  assert.deepEqual(conversation.events.filter(({ kind }) => kind === 'tool').map(({ text, detail }) => [text, detail]), [
+    ['执行动作失败', attemptedActions],
+    ['执行动作失败', `${attemptedActions}\n无法识别的动作`],
+    ['执行动作失败', attemptedActions],
+    ['查看画面失败', '工具参数必须是有效的 JSON'],
+    ['不支持的行动', ' { "height": 2 } '],
+    ['不支持的行动', '{broken'],
+  ]);
+  assert.equal(results.length, calls.length);
+  assert.ok(results.every((result) => result.startsWith('Error: ')));
+});
+
+test('a hidden victory notice reaches the model and stays in history after switching protocols', async (t) => {
+  const notice = '<system-info>红色按钮被按下，恭喜通关🎉</system-info>';
+  const prompt = '关卡提示词，玩家是 {{user}}。';
+  const conversation = { events: [], history: [] };
+  const requests = [];
+  let outcome = 'active';
+  const tools = { whenActive: async () => {}, readScreen: () => png, outcome: () => outcome };
+  t.mock.method(globalThis, 'fetch', async (url, request) => {
+    const protocol = url === protocols.OpenAIResponses.path ? 'OpenAIResponses' : 'OpenAIChatCompletions';
+    requests.push(JSON.parse(request.body));
+    return streamedFixture(protocol, requests.length === 1 ? 0 : 3);
+  });
+  const createAgent = (api) => new Agent({ api, model: 'mock', baseURL: '' }, prompt, tools, () => {}, conversation, '小明');
+
+  const gameAgent = createAgent('OpenAIResponses');
+  await gameAgent.send('先看一眼。');
+  const priorHistory = structuredClone(conversation.history);
+  outcome = 'won';
+  await gameAgent.send(notice, prompt, { hidden: true });
+  await createAgent('OpenAIChatCompletions').send('接下来呢？');
+
+  assert.deepEqual(conversation.events.filter(({ kind }) => kind === 'player'), [
+    { kind: 'player', text: '先看一眼。' },
+    { kind: 'player', text: notice, hidden: true },
+    { kind: 'player', text: '接下来呢？' },
+  ]);
+  assert.deepEqual(requests[2].input, [...priorHistory, { role: 'user', content: notice }]);
+  assert.equal(requests[2].instructions, '关卡提示词，玩家是 小明。');
+  assert.equal(requests[3].messages[0].content, requests[2].instructions);
+  assert.deepEqual(requests[3].messages.filter(({ role }) => role === 'user').map(({ content }) => content),
+    ['先看一眼。', notice, '接下来呢？']);
+});
+
+test('invalid Anthropic tool JSON still produces a failure for the named tool', async (t) => {
+  const requests = [];
+  const conversation = { events: [], history: [] };
+  t.mock.method(globalThis, 'fetch', async (_url, request) => {
+    requests.push(JSON.parse(request.body));
+    return streamedFixture('AnthropicMessages', requests.length === 1 ? 0 : 3, undefined, '{broken');
+  });
+  const agent = new Agent({ api: 'AnthropicMessages', model: 'mock', baseURL: '' }, '', {
+    whenActive: async () => {},
+    readScreen: () => assert.fail('unexpected screenshot'),
+    outcome: () => 'active',
+  }, () => {}, conversation);
+
+  await agent.send('查看画面');
+
+  const detail = '工具参数必须是有效的 JSON';
+  assert.deepEqual(conversation.events.filter(({ kind }) => kind === 'tool'), [
+    { kind: 'tool', text: '查看画面失败', detail },
+  ]);
+  assert.deepEqual(requests[1].messages.at(-1).content, [
+    { type: 'tool_result', tool_use_id: 'call_0', is_error: true, content: `Error: ${detail}` },
+  ]);
+});
 
 test('a game turn executes tools past the former request limit until a response has no call', async (t) => {
   const toolCount = 10;

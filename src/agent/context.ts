@@ -1,3 +1,5 @@
+import { summaryImagePlaceholder } from './prompts.ts';
+
 type Item = Record<string, unknown>;
 
 export type ContextUsage = { key: string; estimate: number; tokens: number };
@@ -19,5 +21,5 @@ export function estimateContext(prompt: string, history: Item[]): number {
 }
 
 export function contextToSummarize(history: Item[]): string {
-  return contextJSON(history, '［关卡截图］');
+  return contextJSON(history, summaryImagePlaceholder);
 }

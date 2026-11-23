@@ -1,5 +1,6 @@
-import { Agent, defaultPrompt, respawnInfo } from '../agent/agent.ts';
+import { Agent } from '../agent/agent.ts';
 import type { ChatEvent, Conversation } from '../agent/agent.ts';
+import { defaultPrompt, respawnInfo, victoryPrompt } from '../agent/prompts.ts';
 import type { ModelSettings } from '../agent/settings.ts';
 import { Runtime } from '../game/runtime.ts';
 import type { Outcome, Snapshot } from '../game/world.ts';
@@ -9,7 +10,6 @@ import type { ProgressUpdate, SavedRun } from '../storage/game.ts';
 import { element, formatDuration } from './elements.ts';
 
 const resultDelayMS = 5000;
-const victoryPrompt = '<system-info>红色按钮被按下，恭喜通关🎉</system-info>';
 
 type RunOptions = {
   level: LevelDefinition;
@@ -250,7 +250,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     const current = agent;
     const replyModel = model;
     const replyUsername = username;
-    if (current) await current.send(victoryPrompt, level.systemPrompt ?? defaultPrompt);
+    if (current) await current.send(victoryPrompt, level.systemPrompt ?? defaultPrompt, { hidden: true });
     if (signal.aborted || !resultPending || current !== agent) return;
     resultReadyAt = performance.now() + resultDelayMS;
     if (model !== replyModel || username !== replyUsername) replaceAgent();
@@ -328,8 +328,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       lastRecord = now;
     }
   }, ended, options.savedRun?.world);
-  if (conversation.events.length === 0) showEmptyChat();
-  else for (const event of conversation.events) appendEvent(messages, event, entries, username);
+  for (const event of conversation.events) appendEvent(messages, event, entries, username);
+  if (!messages.childElementCount) showEmptyChat();
   replaceAgent();
   refreshStage();
   refreshStatus();
@@ -519,6 +519,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
 }
 
 function appendEvent(log: HTMLElement, event: ChatEvent, entries: WeakMap<ChatEvent, HTMLElement>, username: string) {
+  if (event.kind === 'player' && event.hidden) return;
   const follow = log.scrollHeight - log.clientHeight - log.scrollTop < 30;
   const existing = entries.get(event);
   if (existing) {
@@ -532,13 +533,14 @@ function appendEvent(log: HTMLElement, event: ChatEvent, entries: WeakMap<ChatEv
     entry.className = 'tool-event';
     const title = document.createElement('summary');
     title.textContent = event.text;
+    entries.set(event, title);
     entry.append(title);
     if (event.image) {
       const image = document.createElement('img');
       image.src = event.image;
       image.alt = 'Vibe 看到的关卡截图';
       entry.append(image);
-    } else if (event.detail) {
+    } else if (event.detail !== undefined) {
       const content = document.createElement('pre');
       content.textContent = event.detail;
       entry.append(content);

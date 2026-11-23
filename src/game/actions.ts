@@ -1,3 +1,4 @@
+import { toolMessages } from '../agent/prompts.ts';
 import { isRecord } from '../level/definition.ts';
 import { idleInput, moveTime, stepMS } from './world.ts';
 import type { StepInput } from './world.ts';
@@ -13,13 +14,13 @@ const maxSleepMS = 10000;
 export function compileActions(value: unknown): StepInput[] {
   if (!isRecord(value) || Object.keys(value).length !== 1 || !Array.isArray(value.actions) ||
       value.actions.length === 0 || value.actions.length > maxActions) {
-    throw new Error('actions 必须包含 1 到 32 个动作');
+    throw new Error(toolMessages.invalidActionCount);
   }
   const steps: StepInput[] = [];
   let totalSteps = 0;
   let jump = false;
   for (const [index, action] of value.actions.entries()) {
-    const invalid = () => new Error(`第 ${index + 1} 个动作的类型或参数无效`);
+    const invalid = () => new Error(toolMessages.invalidAction(index));
     if (!isRecord(action) || Object.keys(action).some((key) => key !== 'key' && key !== 'value' && key !== 'hold')) throw invalid();
     const { key, value: amount, hold } = action;
     if (hold !== undefined && ((key !== 'moveLeft' && key !== 'moveRight') || amount !== undefined)) throw invalid();
@@ -47,11 +48,11 @@ export function compileActions(value: unknown): StepInput[] {
       totalSteps += Math.ceil(moveTime(amount) * 1000 / stepMS - 1e-9);
     }
     jump = false;
-    if (totalSteps > maxSteps) throw new Error('动作序列最长为 30 秒');
+    if (totalSteps > maxSteps) throw new Error(toolMessages.actionSequenceTooLong);
   }
   // A trailing jump still needs a physics step when there is no timed action after it.
   if (jump) steps.push({ ...idleInput, jump });
-  if (totalSteps + Number(jump) > maxSteps) throw new Error('动作序列最长为 30 秒');
+  if (totalSteps + Number(jump) > maxSteps) throw new Error(toolMessages.actionSequenceTooLong);
   return steps;
 }
 

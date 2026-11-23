@@ -1,4 +1,5 @@
 import { isRecord } from '../level/definition.ts';
+import { screenshotPrompt, toolDefinitions } from './prompts.ts';
 import type { ModelSettings, Protocol } from './settings.ts';
 
 type Item = Record<string, unknown>;
@@ -15,30 +16,7 @@ type Adapter = {
   result(call: ToolCall, value: ToolResult): Item[];
 };
 
-const functions = [
-  {
-    name: 'ReadScreen', description: '观察包含角色、地形和红色按钮的完整游戏画面。',
-    parameters: { type: 'object', properties: {}, additionalProperties: false },
-  },
-  {
-    name: 'ExecActionSequence',
-    description: '按顺序执行动作。moveLeft、moveRight 的 value 是格数（0.01～24），反向时先抵消剩余滑行。手动记录用 hold 代替 value，表示按住方向的秒数（0.001～6）。sleep 的 value 是秒数（0.001～10），jump 可省略 value。一次最多 32 个动作、30 秒。',
-    parameters: {
-      type: 'object', required: ['actions'], additionalProperties: false,
-      properties: {
-        actions: {
-          type: 'array', minItems: 1, maxItems: 32,
-          items: {
-            type: 'object', required: ['key'], additionalProperties: false,
-            properties: { key: { type: 'string', enum: ['jump', 'moveLeft', 'moveRight', 'sleep'] }, value: { type: 'number' }, hold: { type: 'number' } },
-          },
-        },
-      },
-    },
-  },
-];
-
-const openAIFunctions = functions.map((tool) => ({ ...tool, strict: false }));
+const openAIFunctions = toolDefinitions.map((tool) => ({ ...tool, strict: false }));
 
 function object(value: unknown): Item {
   if (!isRecord(value)) throw new Error('模型响应格式不正确');
@@ -51,10 +29,10 @@ function items(value: unknown): Item[] {
 }
 
 function tool(id: unknown, name: unknown, args: unknown, serialized: boolean): ToolCall {
-  if (typeof id !== 'string' || !id || typeof name !== 'string' || !name) {
-    throw new Error('模型返回的工具调用缺少名称或 ID');
+  if (typeof id !== 'string' || !id) {
+    throw new Error('模型返回的工具调用缺少 ID');
   }
-  return { id, name, args, serialized };
+  return { id, name: typeof name === 'string' ? name : '', args, serialized };
 }
 
 function onlyCall(calls: Item[]): Item | undefined {
@@ -100,7 +78,7 @@ const chatCompletions: Adapter = {
     const history: Item[] = [{ role: 'tool', tool_call_id: call.id, content: result.text }];
     if (result.image) {
       history.push({ role: 'user', content: [
-        { type: 'text', text: '这是刚才 ReadScreen 工具返回的游戏画面。' },
+        { type: 'text', text: screenshotPrompt },
         { type: 'image_url', image_url: { url: result.image, detail: 'auto' } },
       ] });
     }
@@ -156,7 +134,7 @@ const anthropicMessages: Adapter = {
       ...(adaptive ? { thinking: { type: 'adaptive', display: 'summarized' } } : {}),
       ...(level ? { output_config: { effort: level } } : {}),
       ...(includeTools ? {
-        tools: functions.map(({ name, description, parameters }) => ({ name, description, input_schema: parameters })),
+        tools: toolDefinitions.map(({ name, description, parameters }) => ({ name, description, input_schema: parameters })),
         tool_choice: { type: 'auto', disable_parallel_tool_use: true },
       } : {}),
     };
@@ -193,7 +171,7 @@ const ollamaChat: Adapter = {
     return {
       model: settings.model, messages: [{ role: 'system', content: prompt }, ...history], stream: true,
       ...(level ? { think } : {}),
-      ...(includeTools ? { tools: functions.map((definition) => ({ type: 'function', function: definition })) } : {}),
+      ...(includeTools ? { tools: toolDefinitions.map((definition) => ({ type: 'function', function: definition })) } : {}),
     };
   },
   read(value) {
@@ -216,7 +194,7 @@ const ollamaChat: Adapter = {
     const history: Item[] = [{ role: 'tool', tool_name: call.name, content: result.text }];
     if (result.image) {
       history.push({
-        role: 'user', content: '这是刚才 ReadScreen 工具返回的游戏画面。',
+        role: 'user', content: screenshotPrompt,
         images: [result.image.slice('data:image/png;base64,'.length)],
       });
     }
@@ -318,6 +296,7 @@ function anthropicStream(emit: EmitDelta): Accumulator {
   const partialInput = new Map<number, string>();
   const inputFields = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
   const reported = new Map<string, number>();
+  let invalidToolInput: { id: unknown; args: string } | undefined;
   let stopReason: unknown;
   let stopped = false;
   return {
@@ -361,7 +340,14 @@ function anthropicStream(emit: EmitDelta): Accumulator {
         }
       } else if (event.type === 'content_block_stop') {
         const json = partialInput.get(index);
-        if (json) block.input = JSON.parse(json);
+        if (json && block.type === 'tool_use') {
+          try {
+            block.input = JSON.parse(json);
+          } catch {
+            // Keep the initial input in history so a tool error can be sent back to the model.
+            invalidToolInput = { id: block.id, args: json };
+          }
+        }
         partialInput.delete(index);
         openBlocks.delete(index);
       }
@@ -370,7 +356,11 @@ function anthropicStream(emit: EmitDelta): Accumulator {
       if (!stopped || openBlocks.size) throw new Error('Anthropic Messages 的响应未完成');
       const content = [...blocks.entries()].sort(([a], [b]) => a - b).map(([, block]) => block);
       const inputTokens = tokens([...reported.values()].reduce((sum, count) => sum + count, 0));
-      return { ...anthropicMessages.read({ content, stop_reason: stopReason }), inputTokens };
+      const reply = anthropicMessages.read({ content, stop_reason: stopReason });
+      if (reply.call && invalidToolInput && reply.call.id === invalidToolInput.id) {
+        reply.call = { ...reply.call, args: invalidToolInput.args, serialized: true };
+      }
+      return { ...reply, inputTokens };
     },
   };
 }
