@@ -8,13 +8,16 @@ import { gridSize, gridSizes, playableError, readLevel, resizeLevel } from '../s
 import { exportLevel, importLevel } from '../src/level/json.ts';
 import { drawScene } from '../src/render/scene.ts';
 
+// 加载旧版关卡样本，供物理和兼容性测试复用。
 const firstLevel = readLevel(JSON.parse(readFileSync(new URL('./fixtures/legacy-level.json', import.meta.url))));
 const right = { direction: 1, jump: false };
 
+// 用相同输入推进指定数量的物理步。
 function repeat(world, input, count) {
   for (let index = 0; index < count; index++) world.step(input);
 }
 
+// 执行编译后的动作，并消费未完成的指令距离。
 function runActions(world, ...actions) {
   for (const input of compileActions({ actions })) {
     let remaining = world.step(input);
@@ -24,10 +27,12 @@ function runActions(world, ...actions) {
   }
 }
 
+// 使用容差比较物理模拟的浮点结果。
 function near(value, expected) {
   assert.ok(Math.abs(value - expected) < 1e-8, `expected ${value} to be near ${expected}`);
 }
 
+// 以正面积重叠作为踩中按钮的判定条件。
 test('a level stops at positive overlap with the supported button', () => {
   const world = new World(firstLevel);
   runActions(world, { key: 'moveRight', value: 10 });
@@ -39,6 +44,7 @@ test('a level stops at positive overlap with the supported button', () => {
   assert.deepEqual(world.snapshot().player, player);
 });
 
+// 验证跳过按钮与反重力踩中按钮的区别。
 test('jumping over the button leaves it unpressed, while inverted support can be pressed', () => {
   const world = new World(firstLevel);
   repeat(world, right, 247);
@@ -56,6 +62,7 @@ test('jumping over the button leaves it unpressed, while inverted support can be
   assert.equal(inverted.snapshot().player.y, 1);
 });
 
+// 验证受阻动作的时间消耗和随后起跳越障。
 test('blocked moves run for their commanded distance, then a jump can cross the block', () => {
   const tiles = [...firstLevel.tiles];
   tiles[7] = '.....#......B...';
@@ -67,6 +74,7 @@ test('blocked moves run for their commanded distance, then a jump can cross the 
   assert.equal(world.outcome, 'won');
 });
 
+// 覆盖离开地形后保留的一次跳跃机会。
 test('a character can jump once after walking off a ledge', () => {
   const tiles = [...firstLevel.tiles];
   tiles[8] = '..#.........#...';
@@ -85,6 +93,7 @@ test('a character can jump once after walking off a ledge', () => {
   assert.deepEqual(world.snapshot(), comparison.snapshot());
 });
 
+// 验证屋顶是碰撞边界，地图底部可坠出。
 test('the roof stops jumps and reversed gravity while the bottom remains open', () => {
   const tiles = firstLevel.tiles.map((row) => '.'.repeat(row.length));
   const world = new World({ ...firstLevel, tiles, spawn: { x: 2, y: 0 } });
@@ -103,12 +112,14 @@ test('the roof stops jumps and reversed gravity while the bottom remains open', 
   assert.ok(inverted.snapshot().player.y > 0);
 });
 
+// 构造带指定支撑的无重力测试关卡。
 function zeroGravityLevel(blocks, spawn = { x: 5, y: 4 }) {
   const tiles = firstLevel.tiles.map((row, y) =>
     Array.from(row, (_, x) => blocks.some(([dx, dy]) => x === spawn.x + dx && y === spawn.y + dy) ? '#' : '.').join(''));
   return { ...firstLevel, tiles, spawn, gravity: 0 };
 }
 
+// 用组合地形验证无重力跳跃的支撑优先级。
 test('zero-gravity jumps use solids in down, up, left, right priority order', () => {
   for (const [blocks, dy] of [
     [[], -1],
@@ -130,6 +141,7 @@ test('zero-gravity jumps use solids in down, up, left, right priority order', ()
   }
 });
 
+// 覆盖墙边和屋顶提供的无重力支撑。
 test('zero-gravity jumps also use the side walls and roof as supports', () => {
   const { columns, rows } = gridSize(firstLevel.tiles);
   for (const [x, y, blocks, dy] of [
@@ -150,6 +162,7 @@ test('zero-gravity jumps also use the side walls and roof as supports', () => {
   }
 });
 
+// 确认无重力跳跃速度持续到再次接触支撑。
 test('a downward jump from right support continues until the next support restores jumping', () => {
   const level = { ...zeroGravityLevel([[1, 0], [0, 3]]), inertia: 0 };
   const world = new World(level);
@@ -174,6 +187,7 @@ test('a downward jump from right support continues until the next support restor
   assert.deepEqual(restored.save(), world.save());
 });
 
+// 覆盖无支撑出生和离开平台后的单次向上跳跃。
 test('zero gravity allows one upward jump after spawning unsupported or moving off a platform', () => {
   const jump = { ...idleInput, jump: true };
   for (const blocks of [[], [[0, 1]]]) {
@@ -192,6 +206,7 @@ test('zero gravity allows one upward jump after spawning unsupported or moving o
   }
 });
 
+// 捕获画布绘制操作以验证重力不会翻转美术。
 test('scene orientation and button artwork stay the same under any gravity', () => {
   const gradient = { addColorStop() {} };
   function draw(gravity, outcome, black = false) {
@@ -215,6 +230,7 @@ test('scene orientation and button artwork stay the same under any gravity', () 
   }
 });
 
+// 验证切换预设尺寸后仍能导入有效的出生点和目标。
 test('all three map presets round-trip with a supported goal and a valid spawn', () => {
   const builtIn = readLevel(JSON.parse(readFileSync(new URL('../levels/definitions/09-trust.json', import.meta.url))));
   assert.deepEqual(gridSize(builtIn.tiles), { rows: 10, columns: 15 });
@@ -228,6 +244,7 @@ test('all three map presets round-trip with a supported goal and a valid spawn',
   }
 });
 
+// 比较原始键盘操作和录像回放，并检查动作批次的整体验证。
 test('recorded keyboard inputs replay exactly, and invalid sequences are rejected as a unit', () => {
   const left = { direction: -1, jump: false };
   const inputs = [
@@ -254,6 +271,7 @@ test('recorded keyboard inputs replay exactly, and invalid sequences are rejecte
   assert.throws(() => compileActions({ actions: Array(4).fill({ key: 'sleep', value: 10 }) }), /30 秒/);
 });
 
+// 覆盖关卡 JSON 往返及不可玩地图拒绝。
 test('JSON round trips and rejects invalid maps and unsupported buttons', () => {
   const json = exportLevel(firstLevel);
   assert.deepEqual(importLevel(json), firstLevel);
@@ -266,12 +284,14 @@ test('JSON round trips and rejects invalid maps and unsupported buttons', () => 
   assert.throws(() => importLevel(json.replace('################', '############.###')), /支撑|实心块/);
 });
 
+// 集中准备有惯性的水平移动关卡及动作构造器。
 const inertiaLevel = { ...firstLevel, spawn: { x: 7, y: 7 }, inertia: 5 };
 const moveRight = (value) => ({ key: 'moveRight', value });
 const moveLeft = (value) => ({ key: 'moveLeft', value });
 const sleep = (value) => ({ key: 'sleep', value });
 const x = (world) => world.snapshot().player.x;
 
+// 用不同动作距离验证加速和匀速阶段。
 test('normal motion accelerates over the first tile and then holds its speed', () => {
   const world = new World(inertiaLevel);
   repeat(world, right, 25);
@@ -282,6 +302,7 @@ test('normal motion accelerates over the first tile and then holds its speed', (
   near(x(world), 9);
 });
 
+// 检查短距离加速后的惯性距离和衰减。
 test('slide distance scales with short moves and slide speed decays to zero', () => {
   const world = new World(inertiaLevel);
   runActions(world, moveRight(0.2));
@@ -306,6 +327,7 @@ test('slide distance scales with short moves and slide speed decays to zero', ()
   }
 });
 
+// 验证反向动作先抵消滑行，再驱动反向位移。
 test('reverse commands cancel the remaining slide before moving in the opposite direction', () => {
   const stop = new World(inertiaLevel);
   runActions(stop, moveRight(2), moveLeft(5), sleep(3));
@@ -328,6 +350,7 @@ test('reverse commands cancel the remaining slide before moving in the opposite 
   near(x(reverse), 3);
 });
 
+// 覆盖等待后的惯性抵消及贴墙反向输入。
 test('commands can cancel a slide after waiting and reverse away from a wall', () => {
   const waited = new World(inertiaLevel);
   runActions(waited, moveRight(2), sleep(0.5));
@@ -345,6 +368,7 @@ test('commands can cancel a slide after waiting and reverse away from a wall', (
   near(x(wall), 7);
 });
 
+// 比较连续模拟与同一地图上恢复存档后的模拟。
 test('restoring a checkpoint resumes position, jump and inertia on an identical map', () => {
   const world = new World(firstLevel);
   repeat(world, right, 10);
@@ -354,6 +378,8 @@ test('restoring a checkpoint resumes position, jump and inertia on an identical 
   accelerating.step(right);
   assert.deepEqual(accelerating.save(), world.save());
   repeat(world, idleInput, 3);
+
+  // 通过 JSON 往返模拟磁盘存档，再比较恢复前后的下一步物理结果。
   const restored = new World(firstLevel, JSON.parse(JSON.stringify(world.save())));
   for (let i = 0; i < 80; i++) {
     const input = i < 10 ? right : idleInput;
@@ -362,6 +388,7 @@ test('restoring a checkpoint resumes position, jump and inertia on an identical 
   }
 });
 
+// 覆盖旧存档缺少加速距离时的兼容恢复。
 test('legacy checkpoints retain an active slide or a full-speed run', () => {
   const world = new World(inertiaLevel);
   repeat(world, right, 25);
@@ -376,6 +403,7 @@ test('legacy checkpoints retain an active slide or a full-speed run', () => {
   near(x(sliding), 9.09);
 });
 
+// 验证暂停期间不消耗动作队列的物理时间。
 test('pausing freezes an in-flight action and resumes it without elapsed time', async () => {
   const doc = Object.assign(new EventTarget(), { hidden: false });
   let frame;
@@ -389,6 +417,8 @@ test('pausing freezes an in-flight action and resumes it without elapsed time', 
     frame(0);
     frame(10);
     near(x(runtime.world), 2.0004);
+
+    // 分别给暂停和恢复首帧注入长间隔，检查它们都不会被积进世界时钟。
     runtime.setPaused(true);
     frame(10000);
     near(x(runtime.world), 2.0004);

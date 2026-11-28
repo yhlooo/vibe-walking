@@ -6,13 +6,19 @@ import { drawScene } from '../render/scene.ts';
 import { element } from '../ui/elements.ts';
 import { mountRun } from '../ui/run.ts';
 
+// 列出可应用于编辑网格的画笔。
 type Brush = 'solid' | 'button' | 'erase' | 'spawn';
+
+// 跟踪当前指针笔划和取消时用于回滚的草稿。
 type Stroke = { pointer: number; previous?: Point; original: LevelDefinition; brush: Brush };
+
+// 接收关卡草稿、保存回调和试玩所需依赖。
 type EditorOptions = Pick<Parameters<typeof mountRun>[1], 'catalog' | 'username' | 'conversation' | 'openSettings'> & {
   level: LevelDefinition;
   save: (level: LevelDefinition) => Promise<void>;
 };
 
+/** 挂载关卡编辑器，将预览、试玩与草稿持久化连接起来。 */
 export function mountEditor(root: HTMLElement, options: EditorOptions) {
   const controller = new AbortController();
   const { signal } = controller;
@@ -83,6 +89,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
   const exportButton = element<HTMLButtonElement>(root, '[data-export]');
   const brushes = root.querySelectorAll<HTMLButtonElement>('[data-brush]');
 
+  // 维护草稿和编辑交互的临时状态。
   let draft = options.level;
   let brush: Brush = 'solid';
   let hover: Point | undefined;
@@ -92,6 +99,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
   let saveNumber = 0;
   let scenePaused = false;
 
+  // 复用游玩场景进行试玩，并在画布上叠加编辑辅助信息。
   const view = mountRun(element(root, '[data-editor-play]'), {
     ...options,
     editor: {
@@ -105,6 +113,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
   const { canvas } = view;
   canvas.setAttribute('aria-label', '游戏画面和地图编辑网格');
 
+  // 同步可玩性状态、坐标与画布。
   function refresh() {
     const { rows, columns } = gridSize(draft.tiles);
     const problem = fieldError || playableError(draft);
@@ -116,6 +125,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     view.redraw();
   }
 
+  // 将草稿应用到试玩，并让界面只响应最新保存结果。
   function persist() {
     view.updateLevel(draft);
     const number = ++saveNumber;
@@ -136,6 +146,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
 
   retrySave.addEventListener('click', persist, { signal });
 
+  // 将草稿的字段同步到编辑表单。
   function loadFields() {
     name.value = draft.name;
     showPrompt(false);
@@ -146,6 +157,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     fieldError = '';
   }
 
+  // 切换提示词的只读或编辑状态和对应按钮。
   function showPrompt(editing: boolean) {
     const edited = editing || draft.systemPrompt !== undefined;
     prompt.value = draft.systemPrompt ?? defaultPrompt;
@@ -156,6 +168,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     resetPrompt.hidden = !edited;
   }
 
+  // 打开提示词编辑时暂停试玩，关闭时恢复原暂停状态。
   element(root, '[data-open-prompt]').addEventListener('click', () => {
     showPrompt(false);
     promptDialog.showModal();
@@ -186,6 +199,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     editPrompt.focus();
   }, { signal });
 
+  // 列出可选尺寸并兼容当前关卡的旧版尺寸。
   function loadSizes() {
     const current = gridSize(draft.tiles);
     const sizes = gridSizes.some(({ rows }) => rows === current.rows) ? gridSizes : [{ ...current, label: '旧版' }, ...gridSizes];
@@ -193,6 +207,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     size.value = String(current.rows);
   }
 
+  // 校验名称和物理字段后更新并保存草稿。
   function editFields() {
     notice = '';
     try {
@@ -205,6 +220,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     refresh();
   }
 
+  // 将指针的屏幕坐标换算为有效网格坐标。
   function pointAt(event: PointerEvent): Point | undefined {
     const { rows, columns } = gridSize(draft.tiles);
     const rect = canvas.getBoundingClientRect();
@@ -214,10 +230,14 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     return { x, y };
   }
 
+  // 在指定格子应用画笔，并维护出生点和按钮的位置约束。
   function paint({ x, y }: Point, tool: Brush) {
     const row = draft.tiles[y];
     const tile = row[x];
     const atSpawn = x === draft.spawn.x && y === draft.spawn.y;
+
+    // 出生点只能移到空格；笔划取消时由原草稿恢复。
+    // 出生点只能移到空格，笔划取消时由原草稿恢复。
     if (tool === 'spawn') {
       if (tile === '.') draft = { ...draft, spawn: { x, y } };
       else notice = '出生点只能放在空格中';
@@ -230,6 +250,8 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
       return;
     }
     const tiles = [...draft.tiles];
+
+    // 移动目标时先清掉原格，保证草稿最多有一个按钮。
     if (tool === 'button') {
       const old = findButton(draft);
       if (old) tiles[old.y] = setTile(tiles[old.y], old.x, '.');
@@ -238,8 +260,12 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     draft = { ...draft, tiles };
   }
 
+  // 结束笔划，提交编辑结果或恢复笔划开始前的草稿。
   function finishStroke(event: PointerEvent, canceled: boolean) {
+    // 只有开启当前笔划的指针可以结束它。
+    // 只有开启当前笔划的指针可以结束它。
     if (!stroke || event.pointerId !== stroke.pointer) return;
+
     if (canceled) {
       draft = stroke.original;
     } else {
@@ -248,15 +274,21 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
       if (draft !== stroke.original) persist();
     }
     stroke = undefined;
+
+    // 先清除笔划状态，释放捕获引发的事件随后会直接返回。
     if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
     refresh();
   }
 
+  // 用指针捕获让同一次笔划持续接收移动和结束事件。
   canvas.addEventListener('pointerdown', (event) => {
     if (event.button !== 0 || stroke) return;
     const point = pointAt(event);
     if (!point) return;
+
     canvas.focus({ preventScroll: true });
+
+    // 按住现有出生点即可拖动，提交位置以松手时的格子为准。
     const onSpawn = point.x === draft.spawn.x && point.y === draft.spawn.y;
     const tool = onSpawn ? 'spawn' : brush;
     notice = '';
@@ -266,6 +298,8 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     if (tool !== 'spawn') paint(point, tool);
     refresh();
   }, { signal });
+
+  // 在笔划前后两次采样之间补齐经过的格子。
   canvas.addEventListener('pointermove', (event) => {
     hover = pointAt(event);
     if (hover && stroke?.pointer === event.pointerId && (stroke.brush === 'solid' || stroke.brush === 'erase')) {
@@ -296,10 +330,14 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     draft = { ...draft, disableReadScreen: disableReadScreen.checked };
     persist();
   }, { signal });
+
+  // 调整地图尺寸，裁掉非空内容前提示用户确认。
   size.addEventListener('change', () => {
     const next = gridSizes.find(({ rows }) => String(rows) === size.value);
     if (!next) return;
     const current = gridSize(draft.tiles);
+
+    // 用与实际调整相同的纵向偏移预测会被裁掉的格子。
     const cut = draft.tiles.some((row, y) => {
       const moved = y + (draft.gravity < 0 ? 0 : next.rows - current.rows);
       return /[#B]/.test(moved < 0 || moved >= next.rows ? row : row.slice(next.columns));
@@ -308,6 +346,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
       size.value = String(current.rows);
       return;
     }
+
     draft = resizeLevel(draft, next.rows, next.columns);
     hover = undefined;
     notice = '';
@@ -316,12 +355,16 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     refresh();
   }, { signal });
   element(root, '[data-import]').addEventListener('click', () => file.click(), { signal });
+
+  // 读取并校验导入文件，再以其替换编辑草稿。
   file.addEventListener('change', async () => {
     const chosen = file.files?.[0];
     file.value = '';
     if (!chosen) return;
     try {
       if (!/\.json$/i.test(chosen.name) || chosen.size > maxLevelBytes) throw new Error('请选择不超过 64 KiB 的 JSON 文件');
+
+      // 文件读取完成后重新检查编辑器是否仍挂载，再替换草稿。
       const level = importLevel(await chosen.text());
       if (signal.aborted) return;
       draft = level;
@@ -333,6 +376,8 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
     }
     if (!signal.aborted) refresh();
   }, { signal });
+
+  // 下载当前关卡定义，随后释放对象 URL。
   exportButton.addEventListener('click', () => {
     const url = URL.createObjectURL(new Blob([exportLevel(draft)], { type: 'application/json' }));
     const link = document.createElement('a');
@@ -358,6 +403,7 @@ export function mountEditor(root: HTMLElement, options: EditorOptions) {
   };
 }
 
+// 替换指定行中的一个格子并返回新行。
 function setTile(row: string, x: number, cell: Tile): string {
   return row.slice(0, x) + cell + row.slice(x + 1);
 }

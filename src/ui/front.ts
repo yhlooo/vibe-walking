@@ -3,6 +3,7 @@ import { drawScene } from '../render/scene.ts';
 import type { LevelEntry, Progress } from '../storage/game.ts';
 import { element, formatDuration } from './elements.ts';
 
+/** 渲染首页并根据游玩进度选择主操作。 */
 export function renderHome(root: HTMLElement, builtInLevels: LevelEntry[], progress: Progress) {
   root.innerHTML = `
     <section class="home-scene">
@@ -25,6 +26,8 @@ export function renderHome(root: HTMLElement, builtInLevels: LevelEntry[], progr
         </nav>
       </div>
     </section>`;
+
+  // 仅将仍匹配物理修订号的未完成存档列入继续选项。
   const unfinished = builtInLevels.filter(({ id, revision }) => {
     const record = progress.levels[id];
     return record?.revision === revision && record.run;
@@ -36,6 +39,7 @@ export function renderHome(root: HTMLElement, builtInLevels: LevelEntry[], progr
   start.href = `#/play/${resume?.id ?? first.id}`;
 }
 
+/** 绘制内置或自建关卡列表、成绩和操作入口。 */
 export function renderLevels(
   root: HTMLElement, levels: LevelEntry[], progress: Progress, custom: boolean,
   warnings: string[], create: () => Promise<void>,
@@ -60,6 +64,8 @@ export function renderLevels(
   if (custom) {
     const createButton = element<HTMLButtonElement>(root, '[data-create-level]');
     const notice = element(root, '[data-level-notice]');
+
+    // 更新自建关卡操作结果提示。
     function showNotice(message: string) {
       notice.textContent = message;
       notice.hidden = !message;
@@ -138,6 +144,7 @@ export function renderLevels(
   }
 }
 
+// 为自建关卡卡片绑定指针和键盘排序。
 function enableLevelSorting(
   list: HTMLElement, createButton: HTMLButtonElement,
   saveOrder: (ids: string[]) => Promise<void>, showNotice: (message: string) => void,
@@ -145,6 +152,7 @@ function enableLevelSorting(
   let drag: { from: HTMLElement; target?: HTMLElement; pointer: number; x: number; y: number } | undefined;
   let scrollFrame = 0;
 
+  // 先保存新顺序，成功后再调整卡片位置。
   async function move(from: HTMLElement, target: HTMLElement) {
     if (from === target || createButton.disabled) return;
     const cards = [...list.querySelectorAll<HTMLElement>('[data-level-id]')];
@@ -152,11 +160,14 @@ function enableLevelSorting(
     const end = cards.indexOf(target);
     cards.splice(start, 1);
     cards.splice(end, 0, from);
+
     createButton.disabled = true;
     list.setAttribute('aria-busy', 'true');
     showNotice('');
     try {
       await saveOrder(cards.map((card) => card.dataset.levelId!));
+
+      // DOM 重排前记住当前焦点，移动后让键盘操作继续留在原卡片。
       const focused = from.contains(document.activeElement) ? document.activeElement as HTMLElement : null;
       list.insertBefore(from, start < end ? target.nextSibling : target);
       focused?.focus();
@@ -168,6 +179,7 @@ function enableLevelSorting(
     }
   }
 
+  // 从指针所在位置更新拖动目标卡片。
   function updateTarget() {
     if (!drag) return;
     const card = document.elementFromPoint(drag.x, drag.y)?.closest<HTMLElement>('[data-level-id]');
@@ -178,9 +190,12 @@ function enableLevelSorting(
     drag.target = target;
   }
 
+  // 指针接近视口边缘时滚动，让远处卡片也能成为目标。
   function scrollWhileDragging() {
     if (!drag || !list.isConnected) return;
     const edge = 56;
+
+    // 滚动速度随指针进入视口边缘区域的深度增加。
     const delta = Math.max(0, drag.y - window.innerHeight + edge) - Math.max(0, edge - drag.y);
     if (delta) {
       window.scrollBy(0, delta / 4);
@@ -207,6 +222,7 @@ function enableLevelSorting(
     updateTarget();
   });
 
+  // 清理拖动状态并提交有效的移动。
   function finishDrag(event: PointerEvent) {
     if (drag?.pointer !== event.pointerId) return;
     if (event.type === 'pointerup') {

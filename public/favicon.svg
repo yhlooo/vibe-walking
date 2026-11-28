@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- 底板、角色轮廓和面向右侧的眼睛。 -->
   <rect width="32" height="32" rx="7" fill="#342846"/>
   <rect x="5" y="5" width="22" height="22" rx=".44" fill="#f8f3f1"/>
   <path fill="#27233e" d="M16 12h2v5h-2zm4 0h2v5h-2z"/>

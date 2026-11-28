@@ -1,3 +1,4 @@
+// Package version 汇总应用版本和构建信息。
 package version
 
 import (
@@ -14,7 +15,8 @@ var Version = zeroVersion
 
 // Info 版本信息
 type Info struct {
-	Version   string `json:"version" yaml:"version"`
+	Version string `json:"version" yaml:"version"`
+	// 构建所用的 Git 提交标识，有工作区改动时带有标记。
 	GitCommit string `json:"gitCommit" yaml:"gitCommit"`
 	GoVersion string `json:"goVersion" yaml:"goVersion"`
 	Arch      string `json:"arch" yaml:"arch"`
@@ -34,8 +36,10 @@ func GetVersionInfo() Info {
 		if ret.Version == zeroVersion {
 			ret.Version = buildInfo.Main.Version
 		}
+
 		// 获取 Go 版本
 		ret.GoVersion = buildInfo.GoVersion
+
 		// 获取 Git 提交信息
 		vcsRevision := ""
 		vcsDirty := false

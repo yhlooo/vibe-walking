@@ -8,6 +8,7 @@ import (
 	"testing"
 )
 
+// TestLoadLegacyModel 验证旧版单模型配置转换为供应商目录时保留连接选项。
 func TestLoadLegacyModel(t *testing.T) {
 	for _, tc := range []struct {
 		protocol     ModelAPIProtocol

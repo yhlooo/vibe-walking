@@ -1,3 +1,4 @@
+/* 主题色、字体和全局排版变量。 */
 :root {
   color-scheme: dark;
   font-family: Inter, -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -42,6 +43,7 @@ button.primary:hover:not(:disabled) { background: #e3ceff; }
 button.text-button { background: transparent; border-color: transparent; color: var(--accent); padding-inline: 0; }
 button.text-button:hover { background: transparent; border-color: transparent; text-decoration: underline; }
 
+/* 应用外壳、角落按钮及固定场景背景。 */
 #app { min-height: 100svh; isolation: isolate; }
 .corner-control {
   position: fixed;
@@ -87,6 +89,7 @@ button.text-button:hover { background: transparent; border-color: transparent; t
   pointer-events: none;
 }
 
+/* 工作区通用样式与游玩、编辑场景的列布局。 */
 .workspace { width: min(100%, 1710px); margin-inline: auto; padding: clamp(64px, 7vw, 96px) clamp(16px, 4vw, 66px) clamp(24px, 3vw, 44px); }
 .workspace:has([data-workspace]:not([hidden]) .run-layout) { width: min(100%, 2250px); padding-inline: clamp(16px, 2vw, 48px); }
 .workspace-title { display: flex; min-width: 0; align-items: center; gap: 12px; }
@@ -124,6 +127,7 @@ h2 { font-size: 15px; font-weight: 730; }
 .success { color: var(--success); font-weight: 700; }
 .invalid { color: var(--danger); }
 
+/* 聊天侧栏、消息、可调整分隔条和动作录像。 */
 .run-sidebar { display: flex; flex-direction: column; min-height: 240px; contain: size; }
 .run-sidebar:has(.recording-panel:not([hidden])) { min-height: 400px; }
 .sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 51px; padding: 10px 14px; }
@@ -165,6 +169,7 @@ h2 { font-size: 15px; font-weight: 730; }
 kbd { display: inline-block; min-width: 18px; text-align: center; border: 1px solid #554a68; border-radius: 4px; padding: 1px 4px; font-size: 11px; background: #242033; }
 .divider { margin-inline: 5px; }
 
+/* 编辑器工具区与画笔状态。 */
 .editor-tools { display: flex; flex-direction: column; gap: 14px; padding: 14px; }
 .editor-tools label, .settings-form label { display: grid; gap: 7px; font-size: 13px; color: #ddd3e9; }
 .editor-tools .read-screen-control { display: flex; align-items: center; cursor: pointer; }
@@ -188,6 +193,7 @@ input::placeholder, textarea::placeholder { color: #9d90ad; }
 .physics-fields { display: grid; gap: 10px; border-top: 1px solid var(--border); padding-top: 13px; }
 .physics-fields input { width: 100%; }
 
+/* 共享弹窗外壳及暂停菜单。 */
 dialog { width: min(460px, calc(100vw - 30px)); border: 1px solid #544668; border-radius: 12px; padding: 18px; color: var(--text); background: #231e30; box-shadow: 0 18px 70px #09060d99; }
 dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .dialog-header { display: flex; justify-content: space-between; align-items: center; min-height: 31px; margin-bottom: 15px; }
@@ -197,6 +203,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .pause-menu { width: min(340px, calc(100vw - 30px)); }
 .pause-actions { display: grid; gap: 8px; }
 
+/* 首页主视觉与场景导航。 */
 .home-scene {
   min-height: max(520px, calc(100svh - clamp(64px, 7vw, 96px) - clamp(24px, 3vw, 44px)));
   display: grid;
@@ -236,6 +243,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .scene-back { display: inline-block; margin-bottom: 14px; color: #d6c4f4; font-size: 14px; }
 .scene-back:hover { text-decoration: underline; }
 .scene-content h1 { font-size: clamp(30px, 5vw, 56px); margin-bottom: 22px; }
+/* 关卡卡片网格、预览和成绩。 */
 .level-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr)); gap: 16px; }
 .level-card { display: block; overflow: hidden; border: 1px solid #594872; border-radius: 12px; background: #221d31; box-shadow: 0 10px 32px #100b1b5c; }
 .level-card:hover { border-color: #c2a4ec; background: #2a223a; }
@@ -248,6 +256,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .level-caption .level-best { margin-top: 10px; font-weight: 650; }
 .level-caption time { display: block; margin-top: 8px; }
 
+/* 设置页面和可输入的模型下拉框。 */
 .settings-scene { width: min(100%, 540px); }
 .settings-form { display: grid; gap: 14px; margin-bottom: 14px; }
 .settings-panel { display: grid; gap: 13px; min-width: 0; margin: 0; padding: 18px; background: #231e30ef; border: 1px solid #514466; border-radius: 12px; }
@@ -290,6 +299,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .combobox-options li { padding: 6px 8px; border-radius: 4px; overflow-wrap: anywhere; cursor: pointer; }
 .combobox-options li:hover, .combobox-options [aria-selected="true"] { background: #392d4c; }
 
+/* 在较窄或较高的视口中调整游玩、编辑和聊天布局。 */
 @media (max-width: 1280px) {
   .home-scene { padding-inline: 0; }
   .home-content h1 { font-size: clamp(42px, 9vw, 108px); }
@@ -328,6 +338,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
   .scene-backdrop:not([hidden]) + .workspace::before { background: linear-gradient(90deg, #13121bf0, #1714248c 90%); }
 }
 
+/* 关卡分类、拖动排序及对应反馈。 */
 .levels-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; }
 .level-tabs { display: flex; gap: 8px; }
 .level-tabs .scene-action { padding-inline: 14px; }
@@ -342,6 +353,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .level-dragging .level-drag { cursor: grabbing; }
 .level-card.level-drop-target { outline: 2px solid var(--accent); outline-offset: 2px; }
 .level-list[aria-busy] .level-drag { cursor: wait; }
+/* 结算、设置弹窗和坠落覆盖层。 */
 .level-result h2 { font-size: 24px; }
 .level-result p { margin-top: 8px; }
 .level-result .dialog-actions { flex-wrap: wrap; }
@@ -361,6 +373,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 }
 .game-over h2 { font-size: clamp(26px, 5vw, 54px); }
 
+/* 编辑器提示词弹窗及思考消息的展开样式。 */
 .prompt-button { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .prompt-dialog { width: min(760px, calc(100vw - 30px)); }
 .prompt-dialog textarea { display: block; width: 100%; min-height: min(300px, 50dvh); max-height: 65dvh; resize: vertical; line-height: 1.65; }
@@ -369,6 +382,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .message.thinking summary { cursor: pointer; font-size: 12px; }
 .message.thinking > p { margin-top: 6px; }
 
+/* 模型供应商编辑器与游玩时的模型选择弹窗。 */
 .provider-list, .provider-fields, .model-options { display: grid; gap: 10px; min-width: 0; }
 .provider-card { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--inset); }
 .provider-card > summary { padding: 10px; cursor: pointer; overflow-wrap: anywhere; }

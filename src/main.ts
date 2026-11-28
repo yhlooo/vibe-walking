@@ -14,6 +14,7 @@ import { providerSettings } from './ui/provider-settings.ts';
 import backdropURL from './render/backdrop.svg';
 import './style.css';
 
+// 挂载应用外壳及由路由共用的设置表单。
 const app = element(document, '#app');
 app.innerHTML = `
   <a class="corner-control brand-mark" href="#/" data-brand aria-label="返回主界面"></a>
@@ -81,6 +82,7 @@ app.innerHTML = `
     </nav>
   </dialog>`;
 
+// 绑定外壳和设置表单中由场景切换复用的节点。
 const workspace = element(app, '[data-workspace]');
 const backdrop = element(app, '[data-backdrop]');
 const brand = element(app, '[data-brand]');
@@ -119,18 +121,26 @@ effortPicker.setOptions([
 let library: LevelEntry[] = [];
 let warnings: string[] = [];
 let progress: Progress = { levels: {} };
+
+// 按关卡跟踪编辑写入，供后续保存与路由切换等待。
 const editorWrites = new Map<string, Promise<void>>();
 let orderWrite: Promise<void> | undefined;
 let latestSave = 0;
 let username = '';
 let setupRoute = '';
 let catalog: ModelCatalog = { defaultModel: '', modelProviders: [] };
+
+// 把当前设置中的默认模型引用解析为游玩配置。
 const defaultModel = () => findModel(catalog, catalog.defaultModel);
 const setupProvider = () => catalog.modelProviders.find(({ id }) => id === 'default');
 let activeRun: ReturnType<typeof mountRun> | undefined;
+
+// 为本次页面会话保留各关卡独立的聊天历史。
 const conversations = new Map<string, Conversation>();
 let initialized = false;
 let mountedRoute = '';
+
+// 使用请求编号及取消控制器过滤过期的异步结果。
 let routeRequest = 0;
 let settingsRequest = 0;
 let modelListRequest: AbortController | undefined;
@@ -138,11 +148,13 @@ let modelsLoaded = false;
 let saving = false;
 let providerFormSnapshot = "";
 
+// 卸载活跃场景及其运行资源。
 function disposeScene() {
   activeRun?.dispose();
   activeRun = undefined;
 }
 
+// 返回指定场景已有的共享对话，首次访问时初始化。
 function conversationFor(id: string): Conversation {
   let conversation = conversations.get(id);
   if (!conversation) {
@@ -152,10 +164,12 @@ function conversationFor(id: string): Conversation {
   return conversation;
 }
 
+// 将应用导航到设置场景。
 function openSettings() {
   location.hash = '#/settings';
 }
 
+// 解析 URL 并渲染对应界面，协调场景、设置和待保存数据。
 async function renderRoute() {
   if (!initialized) return;
   const request = ++routeRequest;
@@ -167,18 +181,25 @@ async function renderRoute() {
   const isLevels = route === '#/levels' || custom || route === '#/create';
   const builtIns = library.filter(({ kind }) => kind === 'builtin');
   const id = playPath === '#/play' ? builtIns[0]?.id : (isPlay ? playPath : route).split('/')[2];
+
+  // 离开编辑器或打开相关列表前等待待处理的写入。
   const leavingEditor = mountedRoute.startsWith('#/create/') && route !== '#/settings';
   while (true) {
     const pending = [editorWrites.get(id), leavingEditor ? editorWrites.get(mountedRoute.split('/')[2]) : undefined,
       custom || route === '#/create' ? orderWrite : undefined];
+
+    // 等待中可能又有写入排队，因此每次完成后重新读取挂起任务。
     if (!pending.some(Boolean)) break;
     await Promise.allSettled(pending);
     if (request !== routeRequest || route !== (location.hash || '#/')) return;
   }
+
   menu.close();
   if (setupRoute && setupRoute !== route) closePlaySetup();
   menuToggle.hidden = true;
   brand.hidden = isEditor;
+
+  // 临时隐藏并暂停活跃场景，使返回时能恢复原有状态。
   if (route === '#/settings') {
     if (!settingsScene.hidden) return;
     settingsBack.href = mountedRoute || '#/';
@@ -193,6 +214,7 @@ async function renderRoute() {
     if (!saving) void refreshSettings();
     return;
   }
+
   if (!settingsScene.hidden) {
     settingsScene.hidden = true;
     settingsRequest++;
@@ -200,6 +222,8 @@ async function renderRoute() {
     workspace.hidden = false;
     providerEditor.fill(catalog);
     syncPause();
+
+    // 从设置回到同一路由时恢复现有场景，沿用世界状态和对话。
     if (mountedRoute === route && activeRun) {
       backdrop.hidden = true;
       menuToggle.hidden = false;
@@ -208,6 +232,7 @@ async function renderRoute() {
     }
   }
 
+  // 正式游玩前检查关卡和首次设置是否齐备。
   const entry = library.find((level) => level.id === id);
   if (isPlay && entry && !playableError(entry.level) && (!username || !defaultModel())) {
     disposeScene();
@@ -225,6 +250,8 @@ async function renderRoute() {
   } else if (isPlay && entry && !playableError(entry.level)) {
     const index = builtIns.findIndex((level) => level.id === entry.id);
     const next = index === -1 ? undefined : builtIns[index + 1];
+
+    // 同时支持页面查询参数和路由查询参数，后者会由下一关链接传递。
     const hashDebug = new URLSearchParams(route.slice(playPath.length + 1)).get('debug') === 'true';
     const debug = hashDebug || new URLSearchParams(location.search).get('debug') === 'true';
     renderRun(entry, debug, next && `#/play/${next.id}${hashDebug ? '?debug=true' : ''}`);
@@ -246,9 +273,11 @@ async function renderRoute() {
   window.scrollTo(0, 0);
 }
 
+// 持久化自建排序并按服务返回的顺序更新目录。
 async function saveLevelOrder(ids: string[]) {
   const pending = updateLevelOrder(ids).then((saved) => {
     const positions = new Map(saved.map((id, index) => [id, index]));
+
     // Stable sort keeps the built-in campaign order.
     const position = ({ id, kind }: LevelEntry) => kind === 'builtin' ? -1 : positions.get(id) ?? saved.length;
     library.sort((a, b) => position(a) - position(b));
@@ -261,6 +290,7 @@ async function saveLevelOrder(ids: string[]) {
   }
 }
 
+// 挂载关卡编辑器，并串行处理同一关卡的保存。
 function renderEditor(entry: LevelEntry) {
   backdrop.hidden = true;
   menuToggle.hidden = false;
@@ -268,15 +298,19 @@ function renderEditor(entry: LevelEntry) {
   activeRun = mountEditor(workspace, {
     level: entry.level, catalog, username, conversation: conversationFor(`create/${id}`), openSettings,
     save(level: LevelDefinition) {
+      // 等待前次写入，并跳过排队期间已被更新替代的草稿。
       const previous = editorWrites.get(id) ?? Promise.resolve();
       const pending = previous.catch(() => {}).then(async () => {
+        // 同一关卡有更新的排队草稿时跳过这个旧版本，由最后一次保存负责落盘。
         if (editorWrites.get(id) !== pending) return;
+
         const saved = await updateLevel(id, level);
         const index = library.findIndex((item) => item.id === id);
         library[index] = saved;
       });
       editorWrites.set(id, pending);
       void pending.finally(() => {
+        // 只清除当前链尾，保留等待它结束的后续写入。
         if (editorWrites.get(id) === pending) editorWrites.delete(id);
       }).catch(() => {});
       return pending;
@@ -284,6 +318,7 @@ function renderEditor(entry: LevelEntry) {
   });
 }
 
+// 从匹配关卡修订号的存档恢复游玩场景。
 function renderRun(entry: LevelEntry, debug: boolean, nextLevel?: string) {
   backdrop.hidden = true;
   menuToggle.hidden = false;
@@ -294,6 +329,7 @@ function renderRun(entry: LevelEntry, debug: boolean, nextLevel?: string) {
     completedAt: record?.completedAt,
     savedRun: record?.revision === revision ? record.run : undefined,
     async onProgress(patch) {
+      // 为进度更新生成递增时间戳，并先同步本地状态。
       const savedAt = latestSave = Math.max(Date.now(), latestSave + 1);
       const previous = progress.levels[id];
       const local = { ...previous, revision, savedAt, run: patch.run ?? undefined };
@@ -303,8 +339,11 @@ function renderRun(entry: LevelEntry, debug: boolean, nextLevel?: string) {
           local.bestDurationMS = patch.durationMS;
         }
       }
+
       progress.levels[id] = local;
       if (patch.recent && entry.kind === 'builtin') progress.recentBuiltin = id;
+
+      // 服务回包可能乱序，只有本地进度未更新时才采用返回值。
       const saved = await updateProgress(id, { ...patch, revision, savedAt });
       if ((progress.levels[id]?.savedAt ?? 0) <= (saved.savedAt ?? 0)) progress.levels[id] = saved;
     },
@@ -312,10 +351,12 @@ function renderRun(entry: LevelEntry, debug: boolean, nextLevel?: string) {
   });
 }
 
+// 根据暂停菜单和设置页的可见性同步暂停状态。
 function syncPause() {
   activeRun?.setPaused(menu.open || !settingsScene.hidden);
 }
 
+// 将共用表单移入首次游玩弹窗并显示缺失的设置。
 function openPlaySetup(route: string) {
   setupRoute = route;
   usernameFields.hidden = Boolean(username);
@@ -331,12 +372,14 @@ function openPlaySetup(route: string) {
   if (!username) usernameInput.focus();
 }
 
+// 打开当前场景的暂停菜单。
 function openMenu() {
   if (menuToggle.hidden || !activeRun) return;
   menu.showModal();
   syncPause();
 }
 
+// 应用服务返回的模型目录和用户名，并通知活跃场景。
 function applySettings(next: Awaited<ReturnType<typeof readSettings>>, reset = false) {
   const changed = next.username !== username || next.defaultModel !== catalog.defaultModel ||
     JSON.stringify(next.modelProviders) !== JSON.stringify(catalog.modelProviders);
@@ -345,6 +388,7 @@ function applySettings(next: Awaited<ReturnType<typeof readSettings>>, reset = f
   if (changed || reset) activeRun?.onSettingsChange(catalog, username);
 }
 
+// 关闭首次游玩弹窗并将共用表单移回设置场景。
 function closePlaySetup() {
   setupRoute = '';
   playSetup.close();
@@ -356,12 +400,14 @@ function closePlaySetup() {
   resetModelList();
 }
 
+// 更新设置表单反馈及错误样式。
 function settingsMessage(text: string, error = false) {
   settingsStatus.textContent = text;
   settingsStatus.hidden = !text;
   settingsStatus.classList.toggle('invalid', error);
 }
 
+// 根据当前连接显示密钥保留提示。
 function updateKeyHint() {
   const provider = setupProvider();
   const sameEndpoint = provider?.protocol === protocolInput.value &&
@@ -371,11 +417,13 @@ function updateKeyHint() {
     : protocolInput.value === 'OllamaChat' ? '本地 Ollama 可留空' : '输入模型 API Key';
 }
 
+// 同步模型列表的加载或错误反馈。
 function showModelListStatus(text: string) {
   modelListStatus.textContent = text;
   modelListStatus.hidden = !text;
 }
 
+// 取消已有模型发现请求并重置下拉列表。
 function resetModelList() {
   modelListRequest?.abort();
   modelListRequest = undefined;
@@ -385,6 +433,7 @@ function resetModelList() {
   showModelListStatus('');
 }
 
+// 从快速设置表单读取临时模型连接。
 function modelConnection() {
   const apiKey = keyInput.value.trim();
   return {
@@ -393,12 +442,14 @@ function modelConnection() {
   };
 }
 
+// 按需发现临时连接可用的模型选项。
 async function loadModelOptions() {
   if (modelListRequest || modelsLoaded || !addressInput.value.trim() || !addressInput.validity.valid) return;
   const request = modelListRequest = new AbortController();
   showModelListStatus('正在读取模型列表…');
   try {
     const models = await listModels(modelConnection(), AbortSignal.any([request.signal, AbortSignal.timeout(17000)]), 'default');
+
     if (request.signal.aborted) return;
     modelPicker.setOptions(models.map((id) => ({ value: id, label: id })));
     modelsLoaded = true;
@@ -413,9 +464,12 @@ async function loadModelOptions() {
   }
 }
 
+// 将当前设置展开到首次配置表单或供应商编辑器。
 function fillSettings() {
   if (!setupRoute) {
     providerEditor.fill(catalog);
+
+    // 保存表单初始快照，用来判定用户是否修改了目录。
     providerFormSnapshot = JSON.stringify(providerEditor.read());
     return;
   }
@@ -433,6 +487,7 @@ function fillSettings() {
   resetModelList();
 }
 
+// 根据提交状态和字段可见性锁定表单。
 function lockSettings(locked: boolean) {
   if (locked) {
     modelPicker.close();
@@ -444,6 +499,7 @@ function lockSettings(locked: boolean) {
   submitSettings.disabled = locked;
 }
 
+// 重新读取本地设置，并忽略已离开页面的结果。
 async function refreshSettings() {
   const request = ++settingsRequest;
   lockSettings(true);
@@ -451,6 +507,7 @@ async function refreshSettings() {
     const next = await readSettings(AbortSignal.timeout(5000));
     if (request !== settingsRequest) return;
     applySettings(next);
+
     if (!settingsScene.hidden) {
       usernameInput.value = username;
       fillSettings();
@@ -462,15 +519,20 @@ async function refreshSettings() {
   }
 }
 
+// 保存改动并更新界面，首次设置后继续进入关卡。
 async function commitSettings(update: SettingsUpdate) {
   if (saving) return;
   const route = setupRoute;
   saving = true;
+
+  // 使之前启动的设置读取失效。
   settingsRequest++;
   lockSettings(true);
   settingsMessage('');
   try {
     applySettings(await saveSettings(update, AbortSignal.timeout(10000)), update.modelProviders !== undefined);
+
+    // 仅当用户仍在原始首次配置弹窗时自动进入关卡。
     if (route && setupRoute === route && playSetup.open && location.hash === route) {
       closePlaySetup();
       void renderRoute();
@@ -487,6 +549,7 @@ async function commitSettings(update: SettingsUpdate) {
   }
 }
 
+// 将菜单事件接入场景暂停和恢复逻辑。
 menuToggle.addEventListener('click', openMenu);
 menu.addEventListener('close', syncPause);
 playSetup.addEventListener('close', () => {
@@ -503,6 +566,8 @@ window.addEventListener('keydown', (event) => {
   if (settingsScene.hidden) openMenu();
   else location.hash = settingsBack.hash;
 });
+
+// 连接字段变化后令已有模型发现结果失效。
 protocolInput.addEventListener('change', () => {
   addressInput.value = protocols[protocolInput.value as Protocol].baseURL;
   addressInput.placeholder = addressInput.value;
@@ -517,6 +582,8 @@ addressInput.addEventListener('input', () => {
 keyInput.addEventListener('input', resetModelList);
 modelInput.addEventListener('focus', loadModelOptions);
 modelInput.addEventListener('click', loadModelOptions);
+
+// 按当前表单用途提交完整供应商目录或快速设置。
 settingsForm.addEventListener('submit', (event) => {
   event.preventDefault();
   const update: SettingsUpdate = {};
@@ -560,6 +627,7 @@ settingsForm.addEventListener('submit', (event) => {
 });
 window.addEventListener('hashchange', () => { void renderRoute(); });
 
+// 加载设置、关卡和进度，尝试迁移浏览器旧数据后再启用路由。
 async function initialize() {
   workspace.innerHTML = '<p class="muted" role="status">正在读取本地关卡和进度…</p>';
   try {
@@ -570,12 +638,16 @@ async function initialize() {
     library = catalog.levels;
     warnings = catalog.warnings ?? [];
     progress = saved;
+
+    // 草稿和进度分别迁移，任一成功都可立即合并，失败项留待重试。
     const [draft, oldProgress] = await Promise.allSettled([migrateDraft(), migrateProgress()]);
     if (draft.status === 'fulfilled' && draft.value && !library.some(({ id }) => id === draft.value?.id)) library.push(draft.value);
     if (oldProgress.status === 'fulfilled' && oldProgress.value) progress = oldProgress.value;
     if (draft.status === 'rejected' || oldProgress.status === 'rejected') {
       warnings.push('部分旧版浏览器存档未能迁移，刷新可重试。');
     }
+
+    // 用现有存档中的最新时间初始化写入序号。
     latestSave = Object.values(progress.levels).reduce((latest, item) => Math.max(latest, item.savedAt ?? 0), progress.recentBuiltinAt ?? 0);
     initialized = true;
     void renderRoute();

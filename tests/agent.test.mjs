@@ -8,14 +8,18 @@ import { protocols } from '../src/agent/settings.ts';
 import { World } from '../src/game/world.ts';
 import { readLevel } from '../src/level/definition.ts';
 
+// 用同一张旧版地图和截图数据构造跨协议测试。
 const flatLevel = readLevel(JSON.parse(readFileSync(new URL('./fixtures/legacy-level.json', import.meta.url))));
 const png = 'data:image/png;base64,cG5n';
 const actions = { actions: [{ key: 'moveRight', value: 21 }] };
+
+// 复现 Responses 将空参数拆入多个输出项的情况。
 const splitReadScreen = [
   { type: 'function_call', id: 'fc_open', status: 'completed', name: 'ReadScreen', call_id: 'ReadScreen_0_c95fe814', arguments: '{' },
   { type: 'function_call', id: 'fc_close', status: 'completed', arguments: '}' },
 ];
 
+// 构造指定协议和轮次的完整模型回复。
 function fixture(protocol, index) {
   const name = index === 1 ? 'ExecActionSequence' : 'ReadScreen';
   const args = index === 1 ? actions : {};
@@ -39,14 +43,17 @@ function fixture(protocol, index) {
   return { stop_reason: index < 3 ? 'tool_use' : 'end_turn', content: [block] };
 }
 
+// 将单个事件编码为 SSE 数据。
 function eventBytes(event) {
   return new TextEncoder().encode(`data: ${typeof event === 'string' ? event : JSON.stringify(event)}\r\n\r\n`);
 }
 
+// 将预制事件流包装成 Fetch 响应。
 function sse(stream) {
   return new Response(stream, { headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } });
 }
 
+// 把等价回复拆成协议各自的流式事件。
 function streamedFixture(protocol, index, inputTokens, partialJSON, { cached, output } = {}) {
   const fixtures = [index].flat().map((entry) => fixture(protocol, entry));
   const [result] = fixtures;
@@ -121,6 +128,7 @@ function streamedFixture(protocol, index, inputTokens, partialJSON, { cached, ou
     start(controller) {
       for (const event of events) {
         const bytes = eventBytes(event);
+
         // Split CRLF and allow UTF-8 code points to span chunks.
         for (let i = 0; i < bytes.length; i += 7) controller.enqueue(bytes.slice(i, i + 7));
       }
@@ -129,6 +137,7 @@ function streamedFixture(protocol, index, inputTokens, partialJSON, { cached, ou
   }));
 }
 
+// 检查截图及其工具调用关联是否已按协议回传。
 function verifyImage(protocol, request, id) {
   if (protocol === 'OpenAIChatCompletions') {
     const [result, screenshot] = request.messages.slice(-2);
@@ -159,6 +168,7 @@ function verifyImage(protocol, request, id) {
   }
 }
 
+// 复用同一对话序列验证各协议的工具往返、流式内容和用量。
 for (const protocol of Object.keys(protocols)) {
   test(`${protocol} executes a batch in order and returns all results before the next response`, async () => {
     const originalFetch = globalThis.fetch;
@@ -212,6 +222,8 @@ for (const protocol of Object.keys(protocols)) {
       }
       requests.push(body);
       requestOutcomes.push(world.outcome);
+
+      // 在同一回合切换截图权限，使下一次生成看到更新后的工具列表。
       if (requests.length === 2) disableReadScreen = true;
       const turn = requests.length;
       return streamedFixture(protocol, turn === 1 ? [0, 1] : turn, turn * 100, undefined, {
@@ -279,6 +291,7 @@ for (const protocol of Object.keys(protocols)) {
   });
 }
 
+// 检查工具错误发生时聊天记录保留的动作与参数信息。
 test('tool failures keep action descriptions and show raw arguments only for unsupported tools', async (t) => {
   const sequence = { actions: [{ key: 'moveLeft', value: 1.2 }, { key: 'jump' }, { key: 'sleep', value: 1 },
     { key: 'moveRight', hold: 0.25 }] };
@@ -326,6 +339,7 @@ test('tool failures keep action descriptions and show raw arguments only for uns
   assert.ok(results.every((result) => result.startsWith('Error: ')));
 });
 
+// 验证通关事件对模型可见，并能在协议切换后保留。
 test('a hidden victory notice reaches the model and stays in history after switching protocols', async (t) => {
   const notice = '<system-info>红色按钮被按下，恭喜通关🎉</system-info>';
   const prompt = '关卡提示词，玩家是 {{user}}。';
@@ -359,6 +373,7 @@ test('a hidden victory notice reaches the model and stays in history after switc
     ['先看一眼。', notice, '接下来呢？']);
 });
 
+// 验证同协议切换供应商也会从可移植的对话事件重建历史。
 test('switching providers with the same protocol rebuilds history from conversation text', async (t) => {
   const api = 'OpenAIResponses';
   const conversation = { events: [], history: [] };
@@ -383,6 +398,7 @@ test('switching providers with the same protocol rebuilds history from conversat
     ['第一条消息', '同一供应商', '切到另一家']);
 });
 
+// 验证某个工具块的参数非法时，其余合法调用仍能继续。
 test('invalid Anthropic tool JSON fails each affected call and allows the remaining call', async (t) => {
   const requests = [];
   const conversation = { events: [], history: [] };
@@ -414,6 +430,7 @@ test('invalid Anthropic tool JSON fails each affected call and allows the remain
   ]);
 });
 
+// 用完整 Agent 回合验证分裂调用修复、执行与回传。
 test('a split ReadScreen in Responses executes once and sends repaired history upstream', async (t) => {
   const requests = [];
   const placeholder = { type: 'message', role: 'assistant', content: [{ type: 'output_text', annotations: [] }] };
@@ -456,6 +473,7 @@ test('a split ReadScreen in Responses executes once and sends repaired history u
   assert.deepEqual(conversation.events.map(({ kind }) => kind), ['player', 'tool', 'assistant']);
 });
 
+// 验证合并分裂参数时保留后续独立调用。
 test('Responses reassembles a split action sequence before executing the next identified call', async (t) => {
   const [opening, closing] = splitReadScreen;
   const action = { ...opening, name: 'ExecActionSequence', call_id: 'action_call' };
@@ -500,6 +518,7 @@ test('Responses reassembles a split action sequence before executing the next id
   assert.ok(!conversation.events.some(({ kind }) => kind === 'error'));
 });
 
+// 覆盖分片合并的边界，检查有歧义或无效的片段。
 test('Responses keeps distinct calls and rejects ambiguous or invalid fragments', () => {
   const read = (output) => adapters.OpenAIResponses.read({ status: 'completed', output });
   const [opening, closing] = splitReadScreen;
@@ -515,6 +534,7 @@ test('Responses keeps distinct calls and rejects ambiguous or invalid fragments'
   assert.throws(() => read([opening, closing, { ...closing, id: 'fc_extra' }]), /缺少 call_id/);
 });
 
+// 防止旧的请求次数限制提前结束工具回合。
 test('a game turn executes tools past the former request limit until a response has no call', async (t) => {
   const toolCount = 10;
   const requests = [];
@@ -553,6 +573,7 @@ test('a game turn executes tools past the former request limit until a response 
   assert.equal(agent.busy, false);
 });
 
+// 模拟被取消的旧请求较晚返回，检查其动作不会进入队列。
 test('a response arriving after cancellation never schedules an old action', async () => {
   const originalFetch = globalThis.fetch;
   let receive;
@@ -567,6 +588,8 @@ test('a response arriving after cancellation never schedules an old action', asy
   }, () => {});
   try {
     const pending = agent.send('move');
+
+    // 等待请求确实发出后销毁 Agent，再手工放行旧响应。
     await requested;
     agent.dispose();
     receive(streamedFixture('OpenAIResponses', 1));
@@ -577,6 +600,7 @@ test('a response arriving after cancellation never schedules an old action', asy
   }
 });
 
+// 检查取消后保留的聊天及仅发送一次的重生信息。
 test('a canceled turn keeps chat, and a respawn notice prefixes only the next user message', async () => {
   const originalFetch = globalThis.fetch;
   const requests = [];
@@ -624,6 +648,7 @@ test('a canceled turn keeps chat, and a respawn notice prefixes only the next us
 });
 
 
+// 验证中断时已收到的增量可保留，内置占位符按用户名替换。
 test('interrupting a streaming turn keeps partial reasoning and text and personalizes only built-in prompts', async (t) => {
   const requests = [];
   const conversation = { events: [], history: [] };
@@ -662,6 +687,7 @@ test('interrupting a streaming turn keeps partial reasoning and text and persona
   assert.equal(requests[2].input.at(-1).content, '然后呢');
 });
 
+// 验证批次中断后已完成、正在执行和未执行的调用各有对应结果。
 test('interrupting a batch retains completed results and cancels active and queued calls', async (t) => {
   const requests = [];
   let startAction;
@@ -698,6 +724,7 @@ test('interrupting a batch retains completed results and cancels active and queu
   assert.equal(requests[1].messages[6].content[1].image_url.url, png);
 });
 
+// 使用模型实际用量覆盖本地估算，触发压缩并保留新指令。
 test('reported input usage triggers streamed compression and keeps the new instruction verbatim', async (t) => {
   const requests = [];
   const conversation = { events: [], history: [] };

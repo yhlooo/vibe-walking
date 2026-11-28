@@ -10,6 +10,7 @@ import (
 	"github.com/go-logr/logr"
 )
 
+// TestModelDiscoveryWithDraftConnection 验证未保存连接的发现请求及各协议的模型列表解析。
 func TestModelDiscoveryWithDraftConnection(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -62,6 +63,7 @@ func TestModelDiscoveryWithDraftConnection(t *testing.T) {
 		{"OllamaChat", "/ollama/api", "", `{"models":["legacy:latest","vision:latest"]}`},
 	} {
 		t.Run(tc.protocol, func(t *testing.T) {
+			// 每组请求改变临时连接或密钥，覆盖凭据复用的条件。
 			body := fmt.Sprintf(`{"protocol":%q,"providerID":"claude","baseURL":%q%s}`, tc.protocol, upstream.URL+tc.path, tc.key)
 			reply := send(handler, http.MethodPost, "/llm/providers/models", body)
 			if reply.Code != http.StatusOK || strings.TrimSpace(reply.Body.String()) != tc.want {

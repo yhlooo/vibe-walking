@@ -4,11 +4,19 @@ import {
 import type { Model, ModelCatalog, ModelProvider, Protocol, ProviderUpdate } from '../agent/settings.ts';
 import { element } from './elements.ts';
 
+// 表示供应商和模型都能复用的可折叠编辑行。
 type EditRow = { node: HTMLDetailsElement };
+
+// 按列表跟踪正在拖动的行，避免跨列表排序。
 const draggedRows = new WeakMap<HTMLElement, EditRow>();
+
+// 将模型编辑节点、稳定键和表单读取函数关联起来。
 type ModelRow = EditRow & { key: string; read: () => Model };
+
+// 将供应商编辑节点、模型行和原始配置关联起来。
 type ProviderRow = EditRow & { models: ModelRow[]; read: () => ProviderUpdate; previous?: ModelProvider };
 
+// 创建可在设置表单里使用的普通按钮。
 function button(text: string) {
   const result = document.createElement('button');
   result.type = 'button';
@@ -16,6 +24,7 @@ function button(text: string) {
   return result;
 }
 
+// 为同一列表内的行提供移动、删除和拖放。
 function orderedRow<T extends EditRow>(row: T, rows: T[], list: HTMLElement, label: string, changed: () => void) {
   const summary = element(row.node, 'summary');
   const handle = document.createElement('span');
@@ -27,8 +36,11 @@ function orderedRow<T extends EditRow>(row: T, rows: T[], list: HTMLElement, lab
   summary.prepend(handle);
   const actions = element(row.node, '[data-order-actions]');
 
+  // 同时调整表单节点和行数组的顺序。
   function move(source: T, target: T, after: boolean) {
     if (target === source) return;
+
+    // 先移出源行，再以目标行在剩余列表中的位置计算插入点。
     rows.splice(rows.indexOf(source), 1);
     rows.splice(rows.indexOf(target) + Number(after), 0, source);
     if (after) target.node.after(source.node);
@@ -55,6 +67,7 @@ function orderedRow<T extends EditRow>(row: T, rows: T[], list: HTMLElement, lab
   });
   actions.append(remove);
 
+  // 记录拖动来源，并仅允许当前列表内交换位置。
   handle.addEventListener('dragstart', (event) => {
     event.stopPropagation();
     if (!event.dataTransfer) return;
@@ -81,6 +94,7 @@ function orderedRow<T extends EditRow>(row: T, rows: T[], list: HTMLElement, lab
   });
 }
 
+/** 挂载供应商和模型目录编辑表单。 */
 export function providerSettings(root: HTMLElement) {
   root.innerHTML = `
     <h2>模型供应商</h2>
@@ -93,6 +107,7 @@ export function providerSettings(root: HTMLElement) {
   let nextKey = 0;
   let discoveryScope = new AbortController();
 
+  // 根据供应商及模型行重建默认模型选项。
   function refreshDefault() {
     const selected = defaultSelect.value;
     defaultSelect.replaceChildren();
@@ -109,6 +124,7 @@ export function providerSettings(root: HTMLElement) {
     if ([...defaultSelect.options].some(({ value }) => value === selected)) defaultSelect.value = selected;
   }
 
+  // 创建供应商编辑行，并按需填入已保存的配置。
   function addProvider(previous?: ModelProvider) {
     const node = document.createElement('details');
     node.className = 'provider-card';
@@ -163,6 +179,7 @@ export function providerSettings(root: HTMLElement) {
     list.append(node);
     orderedRow(row, providers, list, '供应商', refreshDefault);
 
+    // 空字符串表示主动清除密钥，省略时由服务决定是否沿用。
     function connection() {
       return {
         protocol: protocol.value as Protocol, baseURL: url.value.trim(),
@@ -170,6 +187,7 @@ export function providerSettings(root: HTMLElement) {
       };
     }
 
+    // 同步供应商折叠标题和默认模型选项。
     function syncTitle() {
       title.textContent = name.value.trim() || id.value.trim() || '新供应商';
       refreshDefault();
@@ -177,21 +195,27 @@ export function providerSettings(root: HTMLElement) {
     id.addEventListener('input', syncTitle);
     name.addEventListener('input', syncTitle);
 
+    // 判断当前表单是否仍指向原供应商的连接端点。
     function sameEndpoint() {
       return previous?.protocol === protocol.value && previous.baseURL === url.value.trim().replace(/\/+$/, '');
     }
     let request: AbortController | undefined;
+
+    // 连接发生变化时取消发现并重置选项和凭据提示。
     function connectionChanged() {
       request?.abort();
       request = undefined;
       discover.disabled = false;
       suggestions.replaceChildren();
       status.hidden = true;
+
+      // 仅在原端点有密钥时提供清除选项，切到其他端点时清掉该操作。
       clearKey.hidden = !previous?.hasAPIKey || !sameEndpoint();
       if (clearKey.hidden) clear.checked = false;
       key.disabled = clear.checked;
       key.placeholder = clearKey.hidden ? '可留空' : '已保存，留空可保留';
     }
+
     protocol.addEventListener('change', () => {
       url.value = protocols[protocol.value as Protocol].baseURL;
       key.value = '';
@@ -200,9 +224,13 @@ export function providerSettings(root: HTMLElement) {
     url.addEventListener('input', connectionChanged);
     key.addEventListener('input', connectionChanged);
     clear.addEventListener('change', connectionChanged);
+
+    // 发现当前连接可用的模型，并丢弃不再匹配表单的结果。
     discover.addEventListener('click', async () => {
       if (!url.reportValidity()) return;
       const current = request = new AbortController();
+
+      // 连接变动、整个表单重建和超时都可以取消发现请求。
       const signal = AbortSignal.any([current.signal, discoveryScope.signal, AbortSignal.timeout(17000)]);
       discover.disabled = true;
       status.hidden = false;
@@ -210,6 +238,8 @@ export function providerSettings(root: HTMLElement) {
       status.textContent = '正在读取模型列表…';
       try {
         const draft = connection();
+
+        // 原端点且凭据未编辑时走已保存连接接口，其余情况用表单连接查询。
         const ids = previous && sameEndpoint() && draft.apiKey === undefined
           ? await discoverProviderModels(previous.id, signal)
           : await listModels(draft, signal, previous?.id);
@@ -221,6 +251,7 @@ export function providerSettings(root: HTMLElement) {
         status.classList.add('invalid');
         status.textContent = error instanceof Error && error.name !== 'TimeoutError' ? error.message : '读取模型列表超时';
       } finally {
+        // 仅由仍活跃的请求恢复按钮，避免较早请求结束时解锁新请求。
         if (request === current) {
           request = undefined;
           discover.disabled = false;
@@ -228,6 +259,7 @@ export function providerSettings(root: HTMLElement) {
       }
     });
 
+    // 为供应商新增一行可编辑的模型配置。
     function addModel(previous?: Model) {
       const detail = document.createElement('details');
       detail.className = 'provider-card';
@@ -260,6 +292,7 @@ export function providerSettings(root: HTMLElement) {
       modelList.append(detail);
       orderedRow(model, models, modelList, '模型', refreshDefault);
 
+      // 刷新模型折叠标题和默认模型候选项。
       function syncModel() {
         title.textContent = name.value.trim() || id.value.trim() || '新模型';
         refreshDefault();
@@ -285,6 +318,7 @@ export function providerSettings(root: HTMLElement) {
   element(root, '[data-add-provider]').addEventListener('click', () => addProvider());
 
   return {
+    // 取消旧发现请求，并从最新设置重建编辑表单。
     fill(catalog: ModelCatalog) {
       discoveryScope.abort();
       discoveryScope = new AbortController();
@@ -297,6 +331,7 @@ export function providerSettings(root: HTMLElement) {
         if (model) defaultSelect.value = model.key;
       }
     },
+    // 展开包含无效字段的编辑区并显示浏览器校验提示。
     validate() {
       const invalid = [...root.querySelectorAll<HTMLInputElement>('input:invalid')][0];
       if (!invalid) return true;
@@ -306,10 +341,12 @@ export function providerSettings(root: HTMLElement) {
       invalid.reportValidity();
       return false;
     },
+    // 导出供应商顺序，并将默认模型的稳定键转换为当前复合 ID。
     read() {
       const modelProviders = providers.map((provider) => provider.read());
       let defaultModel = '';
       for (const [i, provider] of providers.entries()) {
+        // 用行的稳定键定位选择，再以编辑后的供应商及模型 ID 构造保存值。
         const j = provider.models.findIndex(({ key }) => key === defaultSelect.value);
         if (j >= 0) defaultModel = `${modelProviders[i].id}/${modelProviders[i].models[j].id}`;
       }

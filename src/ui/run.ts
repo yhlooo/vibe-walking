@@ -11,8 +11,10 @@ import type { ProgressUpdate, SavedRun } from '../storage/game.ts';
 import { element, formatDuration } from './elements.ts';
 import { modelPicker } from './model-picker.ts';
 
+// 在通关答复后延迟显示结算弹窗。
 const resultDelayMS = 5000;
 
+// 描述正式游玩和编辑器试玩共用的场景依赖。
 type RunOptions = {
   level: LevelDefinition;
   catalog: ModelCatalog;
@@ -29,6 +31,7 @@ type RunOptions = {
   };
 };
 
+/** 挂载游玩画面、聊天和存档生命周期。 */
 export function mountRun(root: HTMLElement, options: RunOptions) {
   const { editor, conversation } = options;
   root.innerHTML = `
@@ -128,6 +131,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   let catalog = options.catalog;
   let model = findModel(catalog, catalog.defaultModel);
   let selection: ModelSettings | undefined;
+
+  // 将当前场景中的模型选择应用给新的 Agent。
   const picker = modelPicker(root, modelTrigger, signal, (picked) => {
     selection = model = picked;
     replaceAgent();
@@ -144,6 +149,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   let resultTimer: number | undefined;
   let agent: Agent | undefined;
   let lastRecord = 0;
+
+  // 从第一条玩家指示起计时，恢复时接续旧存档用时。
   let firstPromptAt = options.savedRun?.elapsedMS === undefined ? undefined : performance.now() - options.savedRun.elapsedMS;
   let lastSavedWorld = '';
   let saveError = '';
@@ -152,15 +159,19 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   doneBadge.hidden = !options.completedAt;
   if (options.completedAt) doneBadge.title = new Date(options.completedAt).toLocaleString();
 
+  // 判断当前关卡状态是否允许发起对话。
   function canChat() {
     const outcome = runtime.world.outcome;
     return outcome === 'active' || (outcome === 'won' && result !== null && !resultPending);
   }
 
+  // 根据关卡、模型和当前回合同步聊天控件。
   function refreshStatus() {
     const busy = agent?.busy ?? false;
     const chat = canChat() && !manual;
     const won = runtime.world.outcome === 'won';
+
+    // 同一按钮在生成期间用于中断，结算等待期间则禁用输入。
     send.disabled = resultPending || (!busy && (!agent || !chat || !input.value.trim()));
     send.textContent = busy ? '中断' : '发送';
     connect.textContent = username ? '配置模型' : '设置用户名';
@@ -175,23 +186,28 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       : !chat ? '关卡已结束' : agent ? (won ? '等待消息' : '等待指令') : '';
   }
 
+  // 刷新手动操作录像及复制按钮状态。
   function refreshRecording() {
     const recorder = runtime.recorder;
     if (!recorded || !recordedStatus || !recordingPanel || !copy) return;
     recordingPanel.hidden = !manual && !recorder?.started;
     const actions = recorder?.actions() ?? [];
     const formatted = JSON.stringify({ actions }, null, 2);
+
+    // 仅在录像内容变化时写入文本框，避免刷新相同内容打断选中。
     if (recorded.value !== formatted) recorded.value = formatted;
     copy.disabled = actions.length === 0;
     recordedStatus.textContent = !recorder?.started ? '等待首次操作'
       : recorder.tooLong ? '超过单次工具调用限额' : `${actions.length} 个动作`;
   }
 
+  // 委托编辑器绘制覆盖层，或直接绘制游玩场景。
   function draw(snapshot: Snapshot) {
     if (editor) editor.draw(canvas, snapshot);
     else drawScene(canvas, snapshot);
   }
 
+  // 更新场景的通关、坠落和保存提示。
   function refreshStage() {
     const outcome = runtime.world.outcome;
     stageStatus.classList.toggle('success', outcome === 'won');
@@ -207,13 +223,17 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     if (saveError) stageStatus.textContent += ` · ${saveError}`;
   }
 
+  // 计算从首次发言起的本局耗时。
   function elapsedTime() {
     return firstPromptAt === undefined ? undefined : Math.round(performance.now() - firstPromptAt);
   }
 
+  // 提交进度补丁，并只展示最新请求的错误状态。
   function saveProgress(patch: Omit<ProgressUpdate, 'savedAt' | 'revision'>) {
     if (!options.onProgress) return;
     const number = ++saveNumber;
+
+    // 同步场景和结算弹窗中的保存提示。
     function showError(message: string) {
       if (signal.aborted || number !== saveNumber || saveError === message) return;
       saveError = message;
@@ -225,26 +245,33 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       }
     }
     void options.onProgress(patch).then(() => showError(''), () => {
+      // 保存失败时丢弃用于去重的快照，允许后续定时存档重试。
       lastSavedWorld = '';
       showError('无法保存游玩进度');
     });
   }
 
+  // 保存未结束关卡的物理状态，跳过无变化的定时存档。
   function checkpoint(force = false, recent = false) {
     if (!options.onProgress || runtime.world.outcome !== 'active') return;
     const world = runtime.world.save();
+
+    // 通过序列化物理状态识别重复存档，强制保存可以更新本局计时。
     const serialized = JSON.stringify(world);
     if (!force && serialized === lastSavedWorld) return;
     lastSavedWorld = serialized;
     saveProgress({ run: { world, elapsedMS: elapsedTime() }, recent });
   }
 
+  // 在坠落或通关后处理存档和界面反馈。
   function ended(outcome: Outcome) {
     const durationMS = outcome === 'won' ? elapsedTime() : undefined;
     refreshStage();
     if (outcome === 'lost') {
       stopAgent();
       retryRun.focus({ preventScroll: true });
+
+      // 坠落结局不能继续，清除本局存档。
       saveProgress({ run: null });
     } else if (outcome === 'won' && result) {
       resultPending = true;
@@ -253,6 +280,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       const time = element(result, '[data-result-duration]');
       time.hidden = durationMS === undefined;
       if (durationMS !== undefined) time.textContent = `通关耗时 · ${formatDuration(durationMS)}`;
+
+      // 通关成绩单独保存，同时移除已经结束的一局。
       saveProgress({ run: null, won: true, durationMS });
       void requestVictoryReply();
     }
@@ -260,6 +289,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     refreshStatus();
   }
 
+  // 在共享对话中向模型发送隐藏的通关事件。
   async function requestVictoryReply() {
     // Disposing the previous agent aborts its turn and retains its output in the shared conversation.
     replaceAgent();
@@ -269,6 +299,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     const replyModel = model;
     const replyUsername = username;
     if (current) await current.send(victoryPrompt, level.systemPrompt ?? defaultPrompt, { hidden: true });
+
+    // 场景重置、卸载或 Agent 切换期间收到的旧通关答复不会触发结算。
     if (signal.aborted || !resultPending || current !== agent) return;
     resultReadyAt = performance.now() + resultDelayMS;
     if (model !== replyModel || username !== replyUsername) replaceAgent();
@@ -276,6 +308,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     refreshStatus();
   }
 
+  // 等模型答复、展示延迟和暂停状态允许后打开结算弹窗。
   function showResultWhenReady() {
     if (!result || !resultPending || resultReadyAt === undefined) return;
     const remaining = resultReadyAt - performance.now();
@@ -286,12 +319,15 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       }, Math.ceil(remaining));
       return;
     }
+
+    // 暂停时保留就绪结算，恢复场景后再检查是否可显示。
     if (paused) return;
     result.showModal();
     resultPending = false;
     refreshStatus();
   }
 
+  // 在没有对话时展示对应模式的初始提示。
   function showEmptyChat() {
     messages.innerHTML = `
       <div class="chat-empty">
@@ -301,12 +337,14 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       </div>`;
   }
 
+  // 关闭当前 Agent 并取消排队的游戏动作。
   function stopAgent() {
     agent?.dispose();
     agent = undefined;
     runtime.cancelSequence();
   }
 
+  // 显示模型请求数、Token 用量、缓存和生成速率。
   function refreshDebug() {
     if (!debug || !requestTracker) return;
     const { stats } = requestTracker;
@@ -319,6 +357,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     ].join('    ');
   }
 
+  // 使用当前模型及运行时回调创建 Agent，并接续现有对话。
   function replaceAgent() {
     stopAgent();
     const outcome = runtime.world.outcome;
@@ -335,6 +374,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     }, conversation, username, requestTracker);
   }
 
+  // 重开物理世界，清理本局计时及结算状态。
   function reset() {
     if (runtime.world.outcome === 'lost') conversation.pendingSystemInfo = respawnInfo;
     resultPending = false;
@@ -351,6 +391,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     checkpoint(true, true);
   }
 
+  // 驱动场景绘制，并对录像面板更新限频。
   const runtime = new Runtime(level, false, (snapshot) => {
     draw(snapshot);
     const now = performance.now();
@@ -365,12 +406,15 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   refreshStage();
   refreshStatus();
   refreshDebug();
+
+  // 定期保存进度，在页面退出时再补一次存档。
   const checkpointTimer = options.onProgress ? window.setInterval(() => checkpoint(), 1000) : undefined;
   if (options.onProgress) {
     checkpoint(true, true);
     window.addEventListener('pagehide', () => checkpoint(true), { signal });
   }
 
+  // 根据侧栏空间计算编辑区可用高度。
   function chatHeightRange() {
     const min = parseFloat(getComputedStyle(messages).minHeight);
     const total = messages.offsetHeight + composer.offsetHeight;
@@ -378,6 +422,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     return { min, max, total };
   }
 
+  // 将聊天输入区高度限制在可用范围内。
   function resizeChat(height: number) {
     const { min, max, total } = chatHeightRange();
     composer.style.height = `${total - Math.min(max, Math.max(min, height))}px`;
@@ -403,6 +448,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   window.addEventListener('pointermove', (event) => {
     if (drag?.pointer === event.pointerId) resizeChat(drag.historyHeight + event.clientY - drag.y);
   }, { signal });
+
+  // 结束聊天分隔条的指针调整。
   function finishDrag(event: PointerEvent) {
     if (drag?.pointer === event.pointerId) drag = undefined;
   }
@@ -422,6 +469,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     event.stopPropagation();
   }, { signal });
 
+  // 关闭结算弹窗并通过统一入口重开本局。
   function restart() {
     reset();
     if (manual) canvas.focus();
@@ -437,8 +485,12 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       if (!paused && runtime.world.outcome === 'won') input.focus({ preventScroll: true });
     }, { signal });
   }
+
+  // 在模型输入和键盘记录模式之间切换。
   manualSwitch?.addEventListener('change', () => {
     manual = manualSwitch.checked;
+
+    // 进入手动模式从新局开始录制，离开时可保留当前场景和录像。
     if (manual) {
       reset();
       canvas.focus();
@@ -450,8 +502,12 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       refreshRecording();
     }
   }, { signal });
+
+  // 清空共享对话并重建当前 Agent。
   clearChat.addEventListener('click', () => {
     if (resultPending) return;
+
+    // 先结束旧回合，让其中断回调写完共享历史，再清空对话。
     replaceAgent();
     conversation.events.length = conversation.history.length = 0;
     delete conversation.protocol;
@@ -470,11 +526,14 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   modelTrigger.addEventListener('click', () => { if (model) picker.open(catalog, model); }, { signal });
   input.addEventListener('input', refreshStatus, { signal });
   input.addEventListener('keydown', (event) => {
+    // 普通回车用于发送，Shift 回车或输入法组合期间保留文字输入行为。
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
       event.preventDefault();
       if (!agent?.busy && !send.disabled) composer.requestSubmit();
     }
   }, { signal });
+
+  // 发送玩家指示，或中断正在进行的对话。
   composer.addEventListener('submit', async (event) => {
     event.preventDefault();
     if (resultPending) return;
@@ -482,21 +541,28 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       agent.interrupt();
       return;
     }
+
     const text = input.value.trim();
     if (send.disabled || !agent || !text) return;
     const current = agent;
     input.value = '';
+
+    // 收到首条有效玩家指令时开始计时，并立即存下起点。
     if (firstPromptAt === undefined) {
       firstPromptAt = performance.now();
       checkpoint(true);
     }
+
     await current.send(text, level.systemPrompt ?? defaultPrompt);
+
+    // 确认仍是当前场景的活跃回合，才写入指令执行后的存档。
     if (!signal.aborted && current === agent) {
       checkpoint(true);
       refreshStatus();
     }
   }, { signal });
 
+  // 复制动作 JSON，并兼容剪贴板接口不可用的情况。
   copy?.addEventListener('click', async () => {
     if (!recorded || !recordedStatus) return;
     refreshRecording();
@@ -517,7 +583,9 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   return {
     canvas,
     reset,
+    // 应用编辑结果，物理参数改变时重置试玩。
     updateLevel(next: LevelDefinition) {
+      // 只有影响世界状态的编辑会重开试玩，文字和工具选项立即使用新值。
       const changed = next.tiles !== level.tiles || next.spawn.x !== level.spawn.x || next.spawn.y !== level.spawn.y ||
         next.gravity !== level.gravity || next.inertia !== level.inertia;
       level = next;
@@ -525,8 +593,11 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       if (changed) reset();
     },
     redraw() { draw(runtime.world.snapshot()); },
+    // 根据最新目录刷新所选模型并尽量保留临时参数。
     onSettingsChange(next: ModelCatalog, nextUsername: string) {
       catalog = next;
+
+      // 本局选择仍存在时保留参数覆盖值，模型被删时回退到最新默认项。
       const selected = selection && findModel(next, selection.model);
       if (selected && selection) {
         model = { ...selected, maxInputToken: selection.maxInputToken, reasoningEffort: selection.reasoningEffort };
@@ -539,6 +610,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       if (!resultPending || resultReadyAt !== undefined) replaceAgent();
       refreshStatus();
     },
+    // 协调物理暂停、界面状态和待显示的结算。
     setPaused(nextPaused: boolean) {
       paused = nextPaused;
       runtime.setPaused(paused);
@@ -549,6 +621,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
         refreshStatus();
       }
     },
+    // 卸载场景前保存进度，再清理监听、计时和运行时。
     dispose() {
       checkpoint(true);
       window.clearInterval(checkpointTimer);
@@ -556,6 +629,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       result?.close();
       picker.close();
       chatResize.disconnect();
+
       events.abort();
       agent?.dispose();
       runtime.dispose();
@@ -563,16 +637,19 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   };
 }
 
+// 把 Token 数缩写为调试面板用的可读数值。
 function formatTokens(count: number): string {
   if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(2)}M`;
   if (count >= 1_000) return `${(count / 1_000).toFixed(2)}K`;
   return String(count);
 }
 
+// 将缓存命中率格式化为百分比。
 function formatRatio(ratio: number | undefined): string {
   return ratio === undefined ? '—' : `${Math.round(ratio * 100)}%`;
 }
 
+// 按事件类型创建或复用聊天节点以显示流式内容。
 function appendEvent(log: HTMLElement, event: ChatEvent, entries: WeakMap<ChatEvent, HTMLElement>, username: string) {
   if (event.kind === 'player' && event.hidden) return;
   const follow = log.scrollHeight - log.clientHeight - log.scrollTop < 30;

@@ -3,9 +3,13 @@ import { gridSize } from '../level/definition.ts';
 import type { Point } from '../level/definition.ts';
 import type { Snapshot } from '../game/world.ts';
 
+// 定义编辑时叠加绘制的悬停和出生位置。
 type EditOverlay = { hover?: Point; spawn?: Point };
+
+// 控制预览、截图和编辑模式下的绘制方式。
 type DrawOptions = { edit?: EditOverlay; preview?: boolean; pixelHeight?: number; black?: boolean };
 
+/** 按地图比例绘制地形、角色和可选编辑覆盖层。 */
 export function drawScene(
   canvas: HTMLCanvasElement, { level, player, outcome }: Snapshot,
   { edit, preview, pixelHeight, black }: DrawOptions = {},
@@ -13,6 +17,8 @@ export function drawScene(
   const { rows, columns } = gridSize(level.tiles);
   const ratio = String(columns / rows);
   if (canvas.style.getPropertyValue('--scene-ratio') !== ratio) canvas.style.setProperty('--scene-ratio', ratio);
+
+  // 屏幕画布跟随设备像素比，截图使用固定像素高度。
   if (pixelHeight === undefined) {
     const size = canvas.getBoundingClientRect();
     if (size.width === 0 || size.height === 0) return;
@@ -25,15 +31,20 @@ export function drawScene(
     canvas.width = Math.round(pixelHeight * columns / rows);
     canvas.height = pixelHeight;
   }
+
   const context = canvas.getContext('2d');
   if (!context) throw new Error(toolMessages.cannotDrawScreen);
   const { width, height } = canvas;
+
+  // 禁用实景的截图使用纯黑画布，直接跳过后续场景绘制。
   if (black) {
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.fillStyle = '#000';
     context.fillRect(0, 0, width, height);
     return;
   }
+
+  // 将画布缩放到网格坐标，地形与角色共用同一套绘制单位。
   context.setTransform(width / columns, 0, 0, height / rows, 0, 0);
 
   const background = context.createLinearGradient(0, 0, 0, rows);
@@ -53,6 +64,7 @@ export function drawScene(
     context.fill();
   }
 
+  // 仅给上方露出的实心格绘制亮边，保持地形方向一致。
   for (const [y, row] of level.tiles.entries()) {
     for (let x = 0; x < row.length; x++) {
       if (row[x] === '#') {
@@ -75,6 +87,8 @@ export function drawScene(
     context.strokeRect(x + 0.025, y + 0.025, 0.95, 0.95);
   }
   drawCharacter(context, player, player.facing);
+
+  // 按钮固定在格子底部，通过高度表现按下状态。
   for (const [y, row] of level.tiles.entries()) {
     const x = row.indexOf('B');
     if (x < 0) continue;
@@ -90,6 +104,7 @@ export function drawScene(
   if (edit) drawGrid(context, columns, rows, edit.hover);
 }
 
+// 在世界坐标系中绘制角色和朝向。
 function drawCharacter(context: CanvasRenderingContext2D, { x, y }: Point, facing: -1 | 1) {
   context.fillStyle = '#f8f3f1';
   context.beginPath();
@@ -101,6 +116,7 @@ function drawCharacter(context: CanvasRenderingContext2D, { x, y }: Point, facin
   context.fillRect(eye + 0.18, y + 0.30, 0.085, 0.20);
 }
 
+// 绘制编辑网格及悬停高亮。
 function drawGrid(context: CanvasRenderingContext2D, columns: number, rows: number, hover?: Point) {
   context.beginPath();
   context.strokeStyle = '#beb0ff29';
@@ -123,6 +139,7 @@ function drawGrid(context: CanvasRenderingContext2D, columns: number, rows: numb
   }
 }
 
+/** 绘制独立画布并导出供模型读取的 PNG。 */
 export function captureScene(snapshot: Snapshot, black = false): string {
   const canvas = document.createElement('canvas');
   drawScene(canvas, snapshot, { pixelHeight: 512, black });

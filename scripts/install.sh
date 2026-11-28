@@ -93,6 +93,7 @@ if [[ ":${PATH}:" != *":${install_dir}:"* ]]; then
   esac
 fi
 
+# 安装成功后按需启动，并用应用进程替换脚本进程。
 if [[ "${run}" == true ]]; then
   exec "${install_dir}/vibe-walking"
 fi

@@ -41,6 +41,7 @@ func NewVersionOptions() VersionOptions {
 	}
 }
 
+// versionTemplate 定义 version 子命令默认的纯文本布局。
 const versionTemplate = `Version:   {{ .Version }}
 GitCommit: {{ .GitCommit }}
 GoVersion: {{ .GoVersion }}
@@ -62,6 +63,7 @@ func newVersionCommand() *cobra.Command {
 
 			info := version.GetVersionInfo()
 
+			// 选择机器可读的 JSON 或交互终端使用的文本模板。
 			switch opts.OutputFormat {
 			case "json":
 				raw, err := json.Marshal(info)

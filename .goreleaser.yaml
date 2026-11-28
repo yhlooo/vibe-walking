@@ -3,6 +3,7 @@
 
 version: 2
 
+# 为支持的系统和架构构建独立可执行文件，并注入版本号。
 builds:
   - id: vibe-walking-bin
     binary: vibe-walking
@@ -20,6 +21,7 @@ builds:
       - "-X github.com/yhlooo/vibe-walking/internal/version.Version={{ .Version }}"
       - "-w"
 
+# 归档名称与安装脚本一致，Windows 使用 ZIP。
 archives:
   - formats: ["tar.gz"]
     name_template: "{{ .Binary }}-{{ .Os }}-{{ .Arch }}"
@@ -27,9 +29,11 @@ archives:
       - goos: windows
         formats: ["zip"]
 
+# 汇总发布归档的校验值。
 checksum:
   name_template: "checksums.txt"
 
+# 使用 Linux 二进制生成两个平台的容器镜像。
 dockers_v2:
   - id: vibe-walking-image
     dockerfile: goreleaser.dockerfile
@@ -50,6 +54,7 @@ dockers_v2:
       - linux/amd64
       - linux/arm64
 
+# 按提交顺序生成发布日志，并过滤维护性提交。
 changelog:
   sort: asc
   filters:

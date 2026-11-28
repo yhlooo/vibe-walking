@@ -11,6 +11,7 @@ import (
 	"github.com/yhlooo/vibe-walking/internal/jsonfile"
 )
 
+// configFile 描述磁盘配置，兼容旧版单模型字段。
 type configFile struct {
 	Config
 	Model                    legacyModel `json:"model,omitzero"`
@@ -33,6 +34,8 @@ func LoadConfig(path string) (*Config, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("settings %q must contain a JSON object", path)
 	}
+
+	// 缺少供应商目录时，将旧版单模型转换为新目录。
 	if cfg.ModelProviders == nil && cfg.Model != (legacyModel{}) {
 		provider, err := cfg.Model.provider()
 		if err != nil {
@@ -43,6 +46,8 @@ func LoadConfig(path string) (*Config, error) {
 	if err := cfg.NormalizeProviders(); err != nil {
 		return nil, fmt.Errorf("validate settings %q: %w", path, err)
 	}
+
+	// 恢复迁移时记录的旧 Anthropic 路径行为。
 	for i := range cfg.ModelProviders {
 		provider := &cfg.ModelProviders[i]
 		if provider.Protocol == AnthropicMessagesAPI && slices.Contains(cfg.LegacyAnthropicProviders, provider.ID) {
@@ -54,6 +59,7 @@ func LoadConfig(path string) (*Config, error) {
 
 // SaveConfig 保存配置
 func SaveConfig(ctx context.Context, cfg *Config, path string) error {
+	// 另外记录使用旧式路径的供应商 ID，供下次加载时恢复兼容行为。
 	file := configFile{Config: *cfg}
 	for _, provider := range cfg.ModelProviders {
 		if provider.legacyAnthropicPath {

@@ -1,3 +1,4 @@
+// Package main 是 Vibe Walking 命令行程序的入口。
 package main
 
 import (
@@ -10,6 +11,7 @@ import (
 	"github.com/yhlooo/vibe-walking/internal/commands"
 )
 
+// main 将系统退出信号接入根命令，并以命令结果设置进程退出码。
 func main() {
 	ctx, cancel := NotifySignals(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
@@ -38,6 +40,7 @@ func NotifySignals(parent context.Context, signals ...os.Signal) (context.Contex
 			case <-ch:
 				cancel()
 			}
+
 			// 第二次直接退出
 			select {
 			case s, ok := <-ch:

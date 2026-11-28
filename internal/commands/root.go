@@ -1,3 +1,4 @@
+// Package commands 定义命令行接口并协调本地应用启动。
 package commands
 
 import (
@@ -42,6 +43,7 @@ func (o *GlobalOptions) AddPFlags(fs *pflag.FlagSet) {
 	fs.Uint32VarP(&o.Verbosity, "verbose", "v", o.Verbosity, "Number for the log level verbosity (0, 1, or 2)")
 }
 
+// globalOptsContextKey 是全局选项在上下文中的私有键。
 type globalOptsContextKey struct{}
 
 // ContextWithGlobalOptions 创建带全局选项的 context.Context
@@ -62,9 +64,12 @@ func NewOptions() Options {
 
 // Options 运行选项
 type Options struct {
-	Listen      string
+	// HTTP 监听地址，可使用端口 0 让系统分配端口。
+	Listen string
+	// 启动服务后是否打开默认浏览器。
 	OpenBrowser bool
-	DataDir     string
+	// 关卡、设置和进度的本地存储目录。
+	DataDir string
 }
 
 // AddPFlags 将选项绑定到命令行参数
@@ -114,6 +119,7 @@ func NewCommand(name string) *cobra.Command {
 		},
 
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// 未指定数据目录时，在当前用户的主目录中存储数据。
 			dataDir := opts.DataDir
 			if dataDir == "" {
 				home, err := os.UserHomeDir()
@@ -123,6 +129,8 @@ func NewCommand(name string) *cobra.Command {
 				dataDir = filepath.Join(home, ".vibewalking")
 			}
 			ctx := cmd.Context()
+
+			// 服务监听就绪后输出访问地址，并按需异步打开浏览器。
 			return server.Serve(ctx, opts.Listen, dataDir, func(address string) {
 				fmt.Fprintln(cmd.OutOrStdout(), address)
 				if opts.OpenBrowser {

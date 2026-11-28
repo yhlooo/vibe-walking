@@ -15,6 +15,7 @@ import (
 	"github.com/yhlooo/vibe-walking/levels"
 )
 
+// TestLocalGameDataSurvivesRestart 验证关卡和进度在创建新服务实例后仍可读取。
 func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), ".vibewalking")
 	start := func() http.Handler {
@@ -91,6 +92,8 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	if strings.Contains(string(raw), "systemPrompt") || strings.Contains(string(raw), "revision") {
 		t.Fatalf("expected a plain level definition with no prompt override: %s", raw)
 	}
+
+	// 重复提交同一个旧草稿，模拟浏览器迁移后未能清理旧记录的重试。
 	legacyBody := map[string]levels.Definition{"legacy": custom.Level}
 	legacy := gameResponse[levels.Entry](t, request("POST", "levels", legacyBody, 201))
 	if again := gameResponse[levels.Entry](t, request("POST", "levels", legacyBody, 201)); again.ID != legacy.ID {
@@ -138,6 +141,8 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	assertOrder(legacy.ID, custom.ID, "manual")
 	additional := gameResponse[levels.Entry](t, request("POST", "levels", struct{}{}, 201))
 	assertOrder(legacy.ID, custom.ID, "manual", additional.ID)
+
+	// 用重启后的接口对比旧存档，覆盖计时和水平加速进度。
 	savedProgress := gameResponse[levels.Progress](t, request("GET", "progress", nil, 200))
 	if entry := savedProgress.Levels[builtin.ID]; savedProgress.RecentBuiltin != builtin.ID ||
 		entry.Run == nil || entry.Run.World.Player.X != 7.25 || *entry.Run.ElapsedMS != elapsed {
@@ -148,6 +153,7 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 		t.Fatalf("acceleration progress not restored: %+v", entry.Run)
 	}
 
+	// 在数次成绩更新之间重放旧存档，检查已清除的本局记录不会复活。
 	duration := int64(3600)
 	result := levels.ProgressUpdate{Revision: builtin.Revision, SavedAt: 12, Won: true, DurationMS: &duration}
 	first := gameResponse[levels.LevelProgress](t, request("PUT", "progress/"+builtin.ID, result, 200))
@@ -165,6 +171,7 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 改变物理规则后，以旧修订号写入应收到冲突响应。
 	custom.Level.Gravity = 2
 	changed := gameResponse[levels.Entry](t, request("PUT", levelPath, custom.Level, 200))
 	if changed.Revision == saved.Revision {
@@ -173,6 +180,7 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	request("PUT", "progress/"+custom.ID, levels.ProgressUpdate{Revision: saved.Revision, SavedAt: 15, Run: &run}, 409)
 }
 
+// gameResponse 将测试响应体解码为调用方指定的类型。
 func gameResponse[T any](t *testing.T, reply *httptest.ResponseRecorder) T {
 	t.Helper()
 	var value T

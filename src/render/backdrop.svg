@@ -1,4 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 9">
+  <!-- 定义天空渐变和可重复的地面砖纹。 -->
   <defs>
     <linearGradient id="sky" x2="0%" y2="100%">
       <stop stop-color="#24213e"/>
@@ -9,6 +10,7 @@
       <rect x=".025" y=".025" width=".95" height=".95" fill="#29263e"/>
     </pattern>
   </defs>
+  <!-- 按照天空、光束、地形、角色和按钮的顺序叠加场景。 -->
   <path fill="url(#sky)" d="M0 0h16v9H0z"/>
   <path fill="#a698e1" opacity=".065" d="M12 0h4v9H8.48z"/>
   <path fill="url(#tiles)" d="M11 5h3v1h-3zM0 8h16v1H0z"/>

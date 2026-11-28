@@ -18,35 +18,44 @@ export const defaultPrompt = `## 你是谁
 
 与你对话的人叫 {{user}} ，他将指导你在这个世界中的行动。目前来看，你或许应该信任这个人？有什么困难或问题先尝试问问 ta ，即使没什么问题也可以和 ta 聊聊。`;
 
+/** 以下事件在游戏状态变化时通过对话通知模型。 */
 export const respawnInfo = '<system-info>你刚刚坠入虚空，一阵眩晕之后，现在回到了原位置</system-info>';
 export const interruptionInfo = '<system-info>{{user}} 刚刚中断了你的行动，以下是 ta 的新指示</system-info>';
 export const victoryPrompt = '<system-info>红色按钮被按下，恭喜通关 🎉</system-info>';
 
+/** 标明工具结果附带的是关卡截图。 */
 export const screenshotPrompt = '<system-info>这是 ReadScreen 工具返回的画面</system-info>';
 export const summaryImagePlaceholder = '［环境照片］';
+/** 指导模型将旧回合压缩成可以续接的摘要。 */
 export const compressionPrompt =
   '压缩 Vibe 和 {{user}} 的对话及游戏记录，简明保留 {{user}} 的指示、目标、已知关卡状态、已执行的动作和结果。' +
   '保留上一段摘要中的有效信息，只输出更新后的摘要，控制在 500 字以内。';
 
+/** 替换内置提示使用的用户名占位符。 */
 export function personalizePrompt(text: string, username: string): string {
   return text.replaceAll('{{user}}', () => username);
 }
 
+/** 将压缩摘要包装成一条可注入历史的消息。 */
 export function summarizedHistoryPrompt(summary: string): string {
   return `<system-info>此前对话与行动摘要：\n${summary}\n</system-info>`;
 }
 
+/** 用上批摘要和下一段记录构造压缩输入。 */
 export function compressionInput(summary: string, chunk: string): string {
   return summary ? `上一段摘要：\n${summary}\n\n后续记录：\n${chunk}` : chunk;
 }
 
+/** 标记从聊天记录恢复的模型思考内容。 */
 export function thinkingContext(text: string): string {
   return `<thinking>${text}</thinking>`;
 }
 
+/** 定义协议层和 Agent 共用的工具名称。 */
 export const readScreenTool = 'ReadScreen';
 export const execActionSequenceTool = 'ExecActionSequence';
 
+/** 为模型声明游戏工具和参数约束。 */
 export const toolDefinitions = [
   {
     name: readScreenTool, description: '获取包含你的你所在环境的照片',
@@ -77,6 +86,7 @@ export const toolDefinitions = [
   },
 ];
 
+/** 根据关卡设置选择向模型公布的工具。 */
 export function toolsForLevel(disableReadScreen?: boolean) {
   if (!disableReadScreen) return toolDefinitions;
   return toolDefinitions.map((tool) => tool.name === readScreenTool
@@ -84,6 +94,7 @@ export function toolsForLevel(disableReadScreen?: boolean) {
     : tool);
 }
 
+/** 集中维护游戏工具返回给模型的提示。 */
 export const toolMessages = {
   ok: 'Ok',
   interrupted: '动作已中断',
@@ -101,6 +112,7 @@ export const toolMessages = {
   error: (text: string) => `Error: ${text}`,
 };
 
+/** 集中维护生成请求失败时的用户提示。 */
 export const modelErrorMessages = {
   timeout: '模型请求超时',
   connection: '无法连接本地模型代理',

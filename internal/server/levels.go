@@ -9,6 +9,7 @@ import (
 	"github.com/yhlooo/vibe-walking/levels"
 )
 
+// handleLevels 读取关卡目录、创建自建关卡或更新关卡顺序。
 func (s *service) handleLevels(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -22,6 +23,8 @@ func (s *service) handleLevels(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_level", "创建请求格式无效")
 			return
 		}
+
+		// 创建请求可携带旧草稿，先统一校验其关卡格式。
 		var legacy *levels.Definition
 		if body.Legacy != nil {
 			level, err := levels.Decode(body.Legacy)
@@ -31,6 +34,7 @@ func (s *service) handleLevels(w http.ResponseWriter, r *http.Request) {
 			}
 			legacy = &level
 		}
+
 		entry, err := s.levels.Create(r.Context(), legacy)
 		s.writeGameData(w, http.StatusCreated, entry, err)
 	case http.MethodPut:
@@ -51,6 +55,7 @@ func (s *service) handleLevels(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleLevel 读取或替换指定关卡的定义。
 func (s *service) handleLevel(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	switch r.Method {
@@ -68,6 +73,7 @@ func (s *service) handleLevel(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid_level", err.Error())
 			return
 		}
+
 		entry, err := s.levels.Update(r.Context(), id, level)
 		s.writeGameData(w, http.StatusOK, entry, err)
 	default:
@@ -75,17 +81,20 @@ func (s *service) handleLevel(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleProgress 读取游玩进度或合并浏览器中的旧版记录。
 func (s *service) handleProgress(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		progress, err := s.levels.ReadProgress()
 		s.writeGameData(w, http.StatusOK, progress, err)
 	case http.MethodPost:
+		// 旧进度使用单独的结构解码，避免直接覆盖当前存档。
 		var old levels.LegacyProgress
 		if err := decodeJSON(http.MaxBytesReader(w, r.Body, 64<<10), &old, true); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_progress", "旧进度格式无效")
 			return
 		}
+
 		progress, err := s.levels.MigrateProgress(r.Context(), old)
 		s.writeGameData(w, http.StatusOK, progress, err)
 	default:
@@ -93,6 +102,7 @@ func (s *service) handleProgress(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleLevelProgress 更新指定关卡的存档及通关成绩。
 func (s *service) handleLevelProgress(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		allowGameMethods(w, "PUT")
@@ -103,15 +113,18 @@ func (s *service) handleLevelProgress(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_progress", "游玩进度格式无效")
 		return
 	}
+
 	progress, err := s.levels.UpdateProgress(r.Context(), r.PathValue("id"), update)
 	s.writeGameData(w, http.StatusOK, progress, err)
 }
 
+// allowGameMethods 返回不支持的请求方法及对应的 Allow 标头。
 func allowGameMethods(w http.ResponseWriter, methods string) {
 	w.Header().Set("Allow", methods)
 	writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "此接口不接受当前请求方法")
 }
 
+// writeGameData 将关卡存储结果映射为 API 响应。
 func (s *service) writeGameData(w http.ResponseWriter, status int, data any, err error) {
 	switch {
 	case err == nil:
@@ -122,6 +135,8 @@ func (s *service) writeGameData(w http.ResponseWriter, status int, data any, err
 		writeError(w, http.StatusBadRequest, "invalid_progress", err.Error())
 	case errors.Is(err, levels.ErrInvalidOrder):
 		writeError(w, http.StatusBadRequest, "invalid_level_order", err.Error())
+
+	// 修订号冲突要求客户端重新载入关卡。
 	case errors.Is(err, levels.ErrLevelChanged):
 		writeError(w, http.StatusConflict, "level_changed", err.Error())
 	default:

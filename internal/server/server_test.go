@@ -20,6 +20,7 @@ import (
 	"github.com/yhlooo/vibe-walking/pkg/config"
 )
 
+// TestSettingsAndModelProxies 验证设置接口及模型代理的请求和响应。
 func TestSettingsAndModelProxies(t *testing.T) {
 	type received struct {
 		path, model, auth, key, version, cookie string
@@ -135,6 +136,7 @@ func TestSettingsAndModelProxies(t *testing.T) {
 	}
 }
 
+// TestStaticAssetsAndOriginGuard 验证静态页面和跨域请求拦截。
 func TestStaticAssetsAndOriginGuard(t *testing.T) {
 	handler, err := newHandler(t.TempDir(), true, logr.Discard())
 	if err != nil {
@@ -161,6 +163,7 @@ func TestStaticAssetsAndOriginGuard(t *testing.T) {
 	}
 }
 
+// TestSaveFailureKeepsTheActiveConfig 验证配置写入失败时服务继续使用已发布的配置。
 func TestSaveFailureKeepsTheActiveConfig(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "settings.json")
@@ -186,6 +189,7 @@ func TestSaveFailureKeepsTheActiveConfig(t *testing.T) {
 	}
 }
 
+// send 构造本地 HTTP 请求并捕获处理结果。
 func send(handler http.Handler, method, path, body string) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, "http://127.0.0.1"+path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
@@ -194,6 +198,7 @@ func send(handler http.Handler, method, path, body string) *httptest.ResponseRec
 	return response
 }
 
+// TestUsernameAndModelOptionsAreSavedIndependently 验证用户名和模型设置可独立更新。
 func TestUsernameAndModelOptionsAreSavedIndependently(t *testing.T) {
 	dir := t.TempDir()
 	handler, err := newHandler(dir, true, logr.Discard())
@@ -234,6 +239,7 @@ func TestUsernameAndModelOptionsAreSavedIndependently(t *testing.T) {
 	}
 }
 
+// TestProxyFlushesEventsAndCancelsUpstream 验证代理实时返回流式数据并向上游传递取消。
 func TestProxyFlushesEventsAndCancelsUpstream(t *testing.T) {
 	t.Run("SSE", func(t *testing.T) {
 		testProxyStream(t, config.OpenAIResponsesAPI, "/openai/v1/responses", "text/event-stream", "data: first\n")
@@ -243,10 +249,13 @@ func TestProxyFlushesEventsAndCancelsUpstream(t *testing.T) {
 	})
 }
 
+// testProxyStream 用可控制的上游验证指定协议的传输与取消。
 func testProxyStream(t *testing.T, protocol config.ModelAPIProtocol, path, mediaType, firstLine string) {
 	t.Helper()
 	stopped := make(chan struct{})
 	unblock := make(chan struct{})
+
+	// 上游发出首行后主动保持连接，测试因此能区分流式转发和一次性响应。
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if accept := r.Header.Get("Accept"); accept != mediaType {
 			t.Errorf("upstream Accept = %q", accept)
@@ -286,6 +295,8 @@ func testProxyStream(t *testing.T, protocol config.ModelAPIProtocol, path, media
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
+
+	// 上游仍在等待时读取首行，再取消浏览器请求并等待上游观察到取消。
 	line, err := bufio.NewReader(response.Body).ReadString('\n')
 	if err != nil || line != firstLine {
 		t.Fatalf("first event before upstream ends: %q, %v", line, err)
