@@ -1,8 +1,29 @@
 # AGENTS.md
 
+> NOTE: 该文件的修改必须经过用户确认。除非用户要求，否则不应直接修改。
+
 ## 项目结构
 
-TODO: ...
+```text
+cmd/
+└── vibe-walking/   Go 程序入口
+internal/
+├── commands/      命令行子命令与应用启动
+├── server/        本地 HTTP 服务、关卡与设置 API、模型请求代理
+└── web/           前端静态资源嵌入
+pkg/
+└── config/        应用配置及其本地存储
+levels/            内置关卡、用户自建关卡和游玩进度管理
+src/               TypeScript 前端
+├── agent/         模型协议、流式响应、对话上下文与工具调用
+├── editor/        关卡编辑器
+├── game/          游戏规则、动作处理与运行状态
+├── level/         前端关卡定义、校验与导入导出
+├── render/        游戏场景绘制与截图
+├── storage/       关卡和游玩进度的 API 客户端
+└── ui/            首页、关卡列表、游玩界面与模型设置
+tests/             前端测试及测试数据
+```
 
 ## 构建前端静态资源
 
@@ -29,15 +50,15 @@ docs/development/
 │   ├── 20250904-apis.preview.md
 │   └── 20260905-xxx.md
 ├── reference/
-│   ├── claude-code.md
-│   └── codex/
-│       └── api.md
+│   ├── local-data-and-windows-release.md
+│   └── llm/
+│       ├── multiple-tool-calls.md
+│       └── llm-streaming.md
 ├── research/
 │   └── 20250905-xxx.md
 └── specs/
     ├── apis.md
-    ├── cli-usages.md
-    └── codex-hooks.md
+    └── cli-usages.md
 ```
 
 - `docs/development/discuss` 中存放关于这个项目的一些关键讨论，它帮助你了解关于这个项目的一些背景信息，一般来说你不需要记录任何内容到其中，除非用户要求你把这次的对话记录下来。它通常是由用户自己维护的。
@@ -85,3 +106,67 @@ docs/development/
 3. 这个模块具有什么样的接口？
 
 抛开具体的问题，从更高的视角单独审视上述问题的回答，这些回答是否合理（合理指它们清爽、优雅、易于理解）？如果不合理应该如何修改？重复这些思考直到自己觉得满意。
+
+## 注释风格
+
+适当的注释有助于你和其它开发者快速理解代码逻辑。
+
+- 一般应在每一小段逻辑单元前加一个简单的注释说明这几行代码实现什么功能。但是注释也不应过于密集。
+- 遵循语言规范在包、方法、类型、结构体字段上添加简短的说明
+
+示例：
+
+```go
+package main
+
+import (
+  "context"
+  "fmt"
+  "io"
+  "log"
+  "net/http"
+)
+
+func main() {
+  ctx := context.Background()
+
+  // 发送请求
+  content, err := sendRequest(ctx, "https://example.com")
+  if err != nil {
+    log.Fatal(err)
+  }
+
+  // 输出结果
+  fmt.Println(content)
+}
+
+// sendRequest 发送请求
+func sendRequest(ctx context.Context, url string) ([]byte, error) {
+  // 构造请求
+  req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+  if err != nil {
+    return nil, fmt.Errorf("make request error: %w", err)
+  }
+
+  // 发送请求
+  resp, err := http.DefaultClient.Do(req)
+  if err != nil {
+    return nil, fmt.Errorf("send request error: %w", err)
+  }
+  defer func() { _ = resp.Body.Close() }()
+  
+  // 处理响应
+  if resp.StatusCode != http.StatusOK {
+    raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+    return nil, fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(raw))
+  }
+  
+  // 读取响应
+  raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+  if err != nil {
+	  return nil, fmt.Errorf("read response body error: %w", err)
+  }
+  
+  return raw,nil
+}
+```
