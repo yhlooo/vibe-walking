@@ -157,12 +157,13 @@ async function renderRoute() {
   if (!initialized) return;
   const request = ++routeRequest;
   const route = location.hash || '#/';
-  const isPlay = route === '#/play' || route.startsWith('#/play/');
+  const playPath = route.split('?', 1)[0];
+  const isPlay = playPath === '#/play' || playPath.startsWith('#/play/');
   const isEditor = route.startsWith('#/create/');
   const custom = route === '#/levels/custom';
   const isLevels = route === '#/levels' || custom || route === '#/create';
   const builtIns = library.filter(({ kind }) => kind === 'builtin');
-  const id = route === '#/play' ? builtIns[0]?.id : route.split('/')[2];
+  const id = playPath === '#/play' ? builtIns[0]?.id : (isPlay ? playPath : route).split('/')[2];
   const leavingEditor = mountedRoute.startsWith('#/create/') && route !== '#/settings';
   while (true) {
     const pending = [editorWrites.get(id), leavingEditor ? editorWrites.get(mountedRoute.split('/')[2]) : undefined,
@@ -221,7 +222,10 @@ async function renderRoute() {
     renderEditor(entry);
   } else if (isPlay && entry && !playableError(entry.level)) {
     const index = builtIns.findIndex((level) => level.id === entry.id);
-    renderRun(entry, index === -1 ? undefined : builtIns[index + 1]);
+    const next = index === -1 ? undefined : builtIns[index + 1];
+    const hashDebug = new URLSearchParams(route.slice(playPath.length + 1)).get('debug') === 'true';
+    const debug = hashDebug || new URLSearchParams(location.search).get('debug') === 'true';
+    renderRun(entry, debug, next && `#/play/${next.id}${hashDebug ? '?debug=true' : ''}`);
   } else {
     backdrop.hidden = false;
     brand.hidden = false;
@@ -278,16 +282,15 @@ function renderEditor(entry: LevelEntry) {
   });
 }
 
-function renderRun(entry: LevelEntry, next?: LevelEntry) {
+function renderRun(entry: LevelEntry, debug: boolean, nextLevel?: string) {
   backdrop.hidden = true;
   menuToggle.hidden = false;
   const { id, level, revision } = entry;
   const record = progress.levels[id];
   activeRun = mountRun(workspace, {
-    level, model, username, conversation: conversationFor(`play/${id}`),
+    level, model, username, debug, nextLevel, conversation: conversationFor(`play/${id}`),
     completedAt: record?.completedAt,
     savedRun: record?.revision === revision ? record.run : undefined,
-    nextLevel: next && `#/play/${next.id}`,
     async onProgress(patch) {
       const savedAt = latestSave = Math.max(Date.now(), latestSave + 1);
       const previous = progress.levels[id];

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { Agent } from '../src/agent/agent.ts';
+import { Agent, emptyRequestStats } from '../src/agent/agent.ts';
 import { defaultPrompt, respawnInfo } from '../src/agent/prompts.ts';
 import { adapters } from '../src/agent/protocols.ts';
 import { protocols } from '../src/agent/settings.ts';
@@ -47,14 +47,15 @@ function sse(stream) {
   return new Response(stream, { headers: { 'Content-Type': 'text/event-stream; charset=utf-8' } });
 }
 
-function streamedFixture(protocol, index, inputTokens, partialJSON) {
+function streamedFixture(protocol, index, inputTokens, partialJSON, { cached, output } = {}) {
   const fixtures = [index].flat().map((entry) => fixture(protocol, entry));
   const [result] = fixtures;
   if (protocol === 'OllamaChat') {
     const events = [
       { message: { thinking: '先看画面' }, done: false },
       ...fixtures.map(({ message }) => ({ message, done: false })),
-      { message: { content: '' }, done: true, done_reason: 'stop', prompt_eval_count: inputTokens },
+      { message: { content: '' }, done: true, done_reason: 'stop', prompt_eval_count: inputTokens,
+        prompt_eval_cached_count: cached, eval_count: output, eval_duration: output === undefined ? undefined : output * 1e7 },
     ];
     const bytes = new TextEncoder().encode(events.map((event) => JSON.stringify(event)).join('\n'));
     return new Response(new ReadableStream({
@@ -78,19 +79,26 @@ function streamedFixture(protocol, index, inputTokens, partialJSON) {
     } else {
       events = [chunk({ content: message.content.slice(0, 4) }), chunk({ content: message.content.slice(4) })];
     }
-    events.push(chunk({}, finish_reason), { choices: [], usage: { prompt_tokens: inputTokens } }, '[DONE]');
+    const cache = cached === 0 ? { prompt_tokens_details: { cached_tokens: cached } } : { prompt_cache_hit_tokens: cached };
+    events.push(chunk({}, finish_reason), { choices: [], usage: { prompt_tokens: inputTokens, completion_tokens: output, ...cache } }, '[DONE]');
   } else if (protocol === 'OpenAIResponses') {
     const item = result.output.at(-1);
     events = item.type === 'message' ? [
       { type: 'response.output_text.delta', delta: item.content[0].text.slice(0, 4) },
       { type: 'response.output_text.delta', delta: item.content[0].text.slice(4) },
     ] : [];
-    const output = [...result.output.slice(0, -1), ...fixtures.map(({ output }) => output.at(-1))];
-    events.push({ type: 'response.completed', response: { ...result, output, usage: { input_tokens: inputTokens } } });
+    const items = [...result.output.slice(0, -1), ...fixtures.map(({ output }) => output.at(-1))];
+    events.push({ type: 'response.completed', response: { ...result, output: items, usage: {
+      input_tokens: inputTokens, input_tokens_details: { cached_tokens: cached }, output_tokens: output,
+    } } });
   } else {
     const blocks = fixtures.flatMap(({ content }) => content);
     events = [
-      { type: 'message_start', message: { usage: { input_tokens: inputTokens } } },
+      { type: 'message_start', message: { usage: {
+        input_tokens: cached === undefined ? inputTokens : inputTokens - cached - 10,
+        cache_read_input_tokens: cached, cache_creation_input_tokens: cached === undefined ? undefined : 10,
+        output_tokens: output === undefined ? undefined : 1,
+      } } },
       { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } },
       { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '先看画面' } },
       { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'opaque-signature' } },
@@ -105,7 +113,7 @@ function streamedFixture(protocol, index, inputTokens, partialJSON) {
           { type: 'content_block_stop', index },
         ];
       }),
-      { type: 'message_delta', delta: { stop_reason: result.stop_reason } },
+      { type: 'message_delta', delta: { stop_reason: result.stop_reason }, usage: { output_tokens: output } },
       { type: 'message_stop' },
     ];
   }
@@ -159,6 +167,12 @@ for (const protocol of Object.keys(protocols)) {
     const statesSeen = [];
     const requests = [];
     const requestOutcomes = [];
+    const conversation = { events: [], history: [] };
+    const updates = [];
+    const tracker = {
+      stats: emptyRequestStats(),
+      onChange() { updates.push([this.stats.turns, this.stats.outputTokens]); },
+    };
     let disableReadScreen = false;
     const prompt = '只属于这张关卡的系统提示词';
     const model = { api: protocol, model: 'mock', baseURL: 'http://unused', hasAPIKey: true,
@@ -177,7 +191,7 @@ for (const protocol of Object.keys(protocols)) {
         }
       },
       outcome: () => world.outcome,
-    }, (entry) => { if (!events.includes(entry)) events.push(entry); });
+    }, (entry) => { if (!events.includes(entry)) events.push(entry); }, conversation, '', tracker);
     globalThis.fetch = async (url, request) => {
       assert.equal(url, protocols[protocol].path);
       assert.equal(request.headers.Authorization, undefined);
@@ -199,11 +213,23 @@ for (const protocol of Object.keys(protocols)) {
       requests.push(body);
       requestOutcomes.push(world.outcome);
       if (requests.length === 2) disableReadScreen = true;
-      return streamedFixture(protocol, requests.length === 1 ? [0, 1] : requests.length);
+      const turn = requests.length;
+      return streamedFixture(protocol, turn === 1 ? [0, 1] : turn, turn * 100, undefined, {
+        cached: [undefined, 120, 0][turn - 1], output: turn * 10,
+      });
     };
     try {
       await agent.send('先读图，再走到按钮。');
       assert.equal(requests.length, 3);
+      const { stats } = tracker;
+      assert.equal(stats.turns, 3);
+      assert.equal(stats.inputTokens, 600);
+      assert.equal(stats.outputTokens, 60);
+      assert.equal(stats.cachedTokens / stats.inputTokensWithCacheData, 0.24);
+      assert.equal(stats.lastCacheRatio, 0);
+      if (protocol === 'OllamaChat') assert.equal(stats.lastOutputRate, 100);
+      else assert.ok(stats.lastOutputRate > 0);
+      assert.deepEqual(updates, [[1, 0], [1, 10], [2, 10], [2, 30], [3, 30], [3, 60]]);
       assert.deepEqual(requestOutcomes, ['active', 'won', 'won']);
       const batch = requests[1];
       if (protocol === 'OpenAIResponses') {

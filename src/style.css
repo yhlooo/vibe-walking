@@ -98,6 +98,15 @@ h2 { font-size: 15px; font-weight: 730; }
 .run-layout { grid-template-columns: clamp(245px, 17vw, 360px) minmax(0, 1502px); justify-content: center; }
 .play-navigation { grid-row: 1; grid-column: 1 / -1; display: flex; justify-content: space-between; gap: 12px; }
 .play-navigation .scene-action { padding-inline: 12px; }
+.run-debug {
+  grid-column: 1 / -1;
+  min-width: 0;
+  overflow-x: auto;
+  padding: 4px 2px;
+  color: var(--muted);
+  font: 12px/1.5 ui-monospace, Menlo, monospace;
+  white-space: pre;
+}
 .editor-layout { grid-template-columns: minmax(0, 1fr) clamp(176px, 16vw, 240px); align-items: start; }
 .editor-layout .run-layout { grid-template-columns: clamp(220px, 17vw, 360px) minmax(0, 1502px); }
 .run-title { padding: 14px 16px; }

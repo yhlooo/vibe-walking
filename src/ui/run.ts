@@ -1,4 +1,4 @@
-import { Agent } from '../agent/agent.ts';
+import { Agent, emptyRequestStats } from '../agent/agent.ts';
 import type { ChatEvent, Conversation } from '../agent/agent.ts';
 import { defaultPrompt, respawnInfo, victoryPrompt } from '../agent/prompts.ts';
 import type { ModelSettings } from '../agent/settings.ts';
@@ -16,6 +16,7 @@ type RunOptions = {
   model: ModelSettings | null;
   username: string;
   conversation: Conversation;
+  debug?: boolean;
   completedAt?: string;
   savedRun?: SavedRun;
   onProgress?: (patch: Omit<ProgressUpdate, 'savedAt' | 'revision'>) => Promise<void>;
@@ -68,6 +69,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
           </div>
         </div>
       </section>
+      ${options.debug && !editor ? '<div class="run-debug" role="region" aria-label="模型调用统计" tabindex="0" data-run-debug></div>' : ''}
     </div>
     ${options.onProgress ? `
       <dialog class="level-result" aria-labelledby="result-title" data-level-result>
@@ -99,6 +101,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   const clearChat = element<HTMLButtonElement>(root, '[data-clear-chat]');
   const status = element(root, '[data-run-status]');
   const stageStatus = element(root, '[data-stage-status]');
+  const debug = root.querySelector<HTMLElement>('[data-run-debug]');
+  const requestTracker = debug ? { stats: emptyRequestStats(), onChange: refreshDebug } : undefined;
   const doneBadge = element(root, '[data-completed]');
   const resetButton = element<HTMLButtonElement>(root, '[data-reset]');
   const gameOver = element(root, '[data-game-over]');
@@ -289,6 +293,18 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     runtime.cancelSequence();
   }
 
+  function refreshDebug() {
+    if (!debug || !requestTracker) return;
+    const { stats } = requestTracker;
+    const totalCacheRatio = stats.inputTokensWithCacheData ? stats.cachedTokens / stats.inputTokensWithCacheData : undefined;
+    const lastOutputRate = stats.lastOutputRate;
+    debug.textContent = [
+      `Turn: ${stats.turns}`,
+      `Input Tokens: ${formatTokens(stats.inputTokens)} (Cached total: ${formatRatio(totalCacheRatio)} / last: ${formatRatio(stats.lastCacheRatio)})`,
+      `Output Tokens: ${formatTokens(stats.outputTokens)} (${lastOutputRate === undefined ? '—' : `${Math.round(lastOutputRate)} tok/s`})`,
+    ].join('    ');
+  }
+
   function replaceAgent() {
     stopAgent();
     const outcome = runtime.world.outcome;
@@ -302,7 +318,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     }, (event) => {
       appendEvent(messages, event, entries, username);
       refreshStatus();
-    }, conversation, username);
+    }, conversation, username, requestTracker);
   }
 
   function reset() {
@@ -334,6 +350,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   replaceAgent();
   refreshStage();
   refreshStatus();
+  refreshDebug();
   const checkpointTimer = options.onProgress ? window.setInterval(() => checkpoint(), 1000) : undefined;
   if (options.onProgress) {
     checkpoint(true, true);
@@ -425,11 +442,13 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     conversation.events.length = conversation.history.length = 0;
     delete conversation.protocol;
     delete conversation.usage;
+    if (requestTracker) requestTracker.stats = emptyRequestStats();
     delete conversation.summary;
     delete conversation.interrupted;
     input.value = '';
     showEmptyChat();
     refreshStatus();
+    refreshDebug();
   }, { signal });
 
   connect.addEventListener('click', options.openSettings, { signal });
@@ -517,6 +536,16 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       runtime.dispose();
     },
   };
+}
+
+function formatTokens(count: number): string {
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(2)}M`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(2)}K`;
+  return String(count);
+}
+
+function formatRatio(ratio: number | undefined): string {
+  return ratio === undefined ? '—' : `${Math.round(ratio * 100)}%`;
 }
 
 function appendEvent(log: HTMLElement, event: ChatEvent, entries: WeakMap<ChatEvent, HTMLElement>, username: string) {

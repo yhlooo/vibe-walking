@@ -6,7 +6,15 @@ type Item = Record<string, unknown>;
 export type ToolCall = { id: string; name: string; args: unknown; serialized: boolean };
 export type ToolResult = { text: string; image?: string; error?: boolean };
 type CompletedCall = { call: ToolCall; result: ToolResult };
-export type Reply = { history: Item[]; text: string; calls: ToolCall[]; inputTokens?: number };
+export type Reply = {
+  history: Item[];
+  text: string;
+  calls: ToolCall[];
+  inputTokens?: number;
+  cachedTokens?: number;
+  outputTokens?: number;
+  generationSeconds?: number;
+};
 export type OutputKind = 'assistant' | 'thinking';
 type EmitDelta = (kind: OutputKind, text: string) => void;
 type Accumulator = { push(event: Item): boolean | void; finish(): Reply };
@@ -228,6 +236,7 @@ const ollamaChat: Adapter = {
     const message = object(response.message);
     const invocations = message.tool_calls == null ? [] : items(message.tool_calls);
     const text = string(message.content);
+    const generationNS = tokens(response.eval_duration);
     return {
       history: [{ role: 'assistant', ...message }], text,
       calls: invocations.map((invocation, index) => {
@@ -235,6 +244,9 @@ const ollamaChat: Adapter = {
         return tool(`ollama-tool-call-${index}`, fn.name, fn.arguments, false);
       }),
       inputTokens: tokens(response.prompt_eval_count),
+      cachedTokens: tokens(response.prompt_eval_cached_count),
+      outputTokens: tokens(response.eval_count),
+      generationSeconds: generationNS ? generationNS / 1e9 : undefined,
     };
   },
   results(calls) {
@@ -267,7 +279,11 @@ function string(value: unknown): string {
 }
 
 function tokens(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+}
+
+function cachedTokens(details: unknown): number | undefined {
+  return isRecord(details) ? tokens(details.cached_tokens) : undefined;
 }
 
 function chatStream(emit: EmitDelta): Accumulator {
@@ -276,10 +292,10 @@ function chatStream(emit: EmitDelta): Accumulator {
   let content = '';
   let refusal = '';
   let reasoning = '';
-  let inputTokens: number | undefined;
+  let usage: Item = {};
   return {
     push(event) {
-      if (isRecord(event.usage)) inputTokens = tokens(event.usage.prompt_tokens) ?? inputTokens;
+      if (isRecord(event.usage)) usage = { ...usage, ...event.usage };
       const choice = items(event.choices)[0];
       if (!choice) return;
       if (choice.finish_reason != null) finishReason = choice.finish_reason;
@@ -308,7 +324,12 @@ function chatStream(emit: EmitDelta): Accumulator {
     finish() {
       const tool_calls = [...calls.entries()].sort(([a], [b]) => a - b).map(([, call]) => call);
       const message = { content: content || null, refusal, reasoning_content: reasoning, tool_calls };
-      return { ...chatCompletions.read({ choices: [{ message, finish_reason: finishReason }] }), inputTokens };
+      return {
+        ...chatCompletions.read({ choices: [{ message, finish_reason: finishReason }] }),
+        inputTokens: tokens(usage.prompt_tokens),
+        cachedTokens: cachedTokens(usage.prompt_tokens_details) ?? tokens(usage.prompt_cache_hit_tokens),
+        outputTokens: tokens(usage.completion_tokens),
+      };
     },
   };
 }
@@ -330,8 +351,13 @@ function responsesStream(emit: EmitDelta): Accumulator {
     },
     finish() {
       const reply = responses.read(response);
-      const usage = response?.usage;
-      return { ...reply, inputTokens: isRecord(usage) ? tokens(usage.input_tokens) : undefined };
+      const usage = isRecord(response?.usage) ? response.usage : {};
+      return {
+        ...reply,
+        inputTokens: tokens(usage.input_tokens),
+        cachedTokens: cachedTokens(usage.input_tokens_details),
+        outputTokens: tokens(usage.output_tokens),
+      };
     },
   };
 }
@@ -341,17 +367,17 @@ function anthropicStream(emit: EmitDelta): Accumulator {
   const openBlocks = new Set<number>();
   const partialInput = new Map<number, string>();
   const invalidToolInputs = new Map<unknown, string>();
-  const inputFields = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens'];
-  const reported = new Map<string, number>();
+  const usageFields = ['input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens'] as const;
+  const reported: Partial<Record<typeof usageFields[number], number>> = {};
   let stopReason: unknown;
   let stopped = false;
   return {
     push(event) {
       const usage = (isRecord(event.message) ? event.message : event).usage;
       if (isRecord(usage)) {
-        for (const field of inputFields) {
-          const count = usage[field];
-          if (typeof count === 'number') reported.set(field, count);
+        for (const field of usageFields) {
+          const count = tokens(usage[field]);
+          if (count !== undefined) reported[field] = count;
         }
       }
       if (event.type === 'message_delta') {
@@ -401,13 +427,15 @@ function anthropicStream(emit: EmitDelta): Accumulator {
     finish() {
       if (!stopped || openBlocks.size) throw new Error('Anthropic Messages 的响应未完成');
       const content = [...blocks.entries()].sort(([a], [b]) => a - b).map(([, block]) => block);
-      const inputTokens = tokens([...reported.values()].reduce((sum, count) => sum + count, 0));
+      const { input_tokens, cache_read_input_tokens, cache_creation_input_tokens, output_tokens } = reported;
+      const inputTokens = input_tokens === undefined && cache_read_input_tokens === undefined && cache_creation_input_tokens === undefined
+        ? undefined : tokens((input_tokens ?? 0) + (cache_read_input_tokens ?? 0) + (cache_creation_input_tokens ?? 0));
       const reply = anthropicMessages.read({ content, stop_reason: stopReason });
       const calls = reply.calls.map((call) => {
         const args = invalidToolInputs.get(call.id);
         return args === undefined ? call : { ...call, args, serialized: true };
       });
-      return { ...reply, calls, inputTokens };
+      return { ...reply, calls, inputTokens, cachedTokens: cache_read_input_tokens, outputTokens: output_tokens };
     },
   };
 }

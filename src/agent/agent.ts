@@ -32,6 +32,22 @@ export type Conversation = {
   summary?: Record<string, unknown>;
 };
 
+export type RequestStats = {
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cachedTokens: number;
+  inputTokensWithCacheData: number;
+  lastCacheRatio?: number;
+  lastOutputRate?: number;
+};
+
+type RequestTracker = { stats: RequestStats; onChange: () => void };
+
+export function emptyRequestStats(): RequestStats {
+  return { turns: 0, inputTokens: 0, outputTokens: 0, cachedTokens: 0, inputTokensWithCacheData: 0 };
+}
+
 type GameTools = {
   isReadScreenDisabled?: () => boolean;
   readScreen: (disabled: boolean) => string;
@@ -47,18 +63,20 @@ export class Agent {
   private readonly onEvent: (event: ChatEvent) => void;
   private readonly conversation: Conversation;
   private readonly username: string;
+  private readonly requestTracker?: RequestTracker;
   private turn?: AbortController;
   private disposed = false;
   busy = false;
 
   constructor(model: ModelSettings, prompt: string, tools: GameTools, emit: (event: ChatEvent) => void,
-    conversation: Conversation = { events: [], history: [] }, username = '') {
+    conversation: Conversation = { events: [], history: [] }, username = '', requestTracker?: RequestTracker) {
     this.model = model;
     this.prompt = prompt;
     this.tools = tools;
     this.onEvent = emit;
     this.conversation = conversation;
     this.username = username;
+    this.requestTracker = requestTracker;
   }
 
   dispose() {
@@ -234,9 +252,17 @@ export class Agent {
     }
     resetTimer();
     try {
+      const payload = JSON.stringify(body);
+      const tracker = this.requestTracker;
+      const stats = tracker?.stats;
+      if (stats) {
+        stats.turns++;
+        tracker.onChange();
+      }
+      const startedAt = tracker ? performance.now() : 0;
       const response = await fetch(protocols[protocol].path, {
         method: 'POST', redirect: 'error', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body), signal: requestSignal,
+        body: payload, signal: requestSignal,
       });
       if (requestSignal.aborted) {
         void response.body?.cancel().catch(() => {});
@@ -246,7 +272,13 @@ export class Agent {
       const stream = streamReply(protocol, emit);
       resetTimer();
       await readModelStream(response, (data) => acceptStreamEvent(stream, data), requestSignal, resetTimer, protocol === 'OllamaChat');
-      return stream.finish();
+      requestSignal.throwIfAborted();
+      const reply = stream.finish();
+      if (stats) {
+        recordUsage(stats, reply, (performance.now() - startedAt) / 1000);
+        tracker.onChange();
+      }
+      return reply;
     } catch (error) {
       requestSignal.throwIfAborted();
       throw error;
@@ -301,6 +333,19 @@ export class Agent {
       return { text: toolMessages.error(text), error: true };
     }
   }
+}
+
+function recordUsage(stats: RequestStats, { inputTokens, outputTokens, cachedTokens, generationSeconds }: Reply, elapsedSeconds: number) {
+  stats.inputTokens += inputTokens ?? 0;
+  stats.outputTokens += outputTokens ?? 0;
+  stats.lastCacheRatio = undefined;
+  if (inputTokens && cachedTokens !== undefined && cachedTokens <= inputTokens) {
+    stats.inputTokensWithCacheData += inputTokens;
+    stats.cachedTokens += cachedTokens;
+    stats.lastCacheRatio = cachedTokens / inputTokens;
+  }
+  const seconds = generationSeconds ?? elapsedSeconds;
+  stats.lastOutputRate = outputTokens !== undefined && seconds > 0 ? outputTokens / seconds : undefined;
 }
 
 function describeActions(args: unknown): string | undefined {
