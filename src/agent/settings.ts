@@ -15,7 +15,11 @@ export const defaultProtocol: Protocol = 'OpenAIResponses';
 /** 未指定输入上限时使用的默认值。 */
 export const defaultMaxInputToken = 1_000_000;
 /** 列出表单可建议的思考强度值。 */
-export const reasoningEfforts = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra', 'true', 'false'];
+const reasoningEfforts = ['none', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+export const reasoningEffortOptions = [
+  { value: '', label: '默认' },
+  ...reasoningEfforts.map((value) => ({ value, label: value })),
+];
 
 /** 是 Agent 所需的有效连接与模型配置。 */
 export type ModelSettings = {
@@ -69,9 +73,9 @@ export function findModel(catalog: ModelCatalog, id: string): ModelSettings | nu
 /** 格式化供界面显示的模型参数摘要。 */
 export function formatModelOptions(model: ModelSettings) {
   const tokens = model.maxInputToken;
-  const context = tokens % 1_000_000 === 0 ? `${tokens / 1_000_000}m`
-    : tokens % 1000 === 0 ? `${tokens / 1000}k` : String(tokens);
-  return `[${model.reasoningEffort || '默认'}, ${context}]`;
+  const context = tokens % 1_000_000 === 0 ? `${tokens / 1_000_000}M`
+    : tokens % 1000 === 0 ? `${tokens / 1000}K` : String(tokens);
+  return `${model.reasoningEffort.toUpperCase() || '默认'} ${context}`;
 }
 
 // 核验设置响应中的单个模型条目。

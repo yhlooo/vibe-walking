@@ -1,7 +1,9 @@
 import {
-  defaultMaxInputToken, defaultProtocol, discoverProviderModels, listModels, protocols, reasoningEfforts,
+  defaultMaxInputToken, defaultProtocol, discoverProviderModels, listModels, protocols, reasoningEffortOptions,
 } from '../agent/settings.ts';
 import type { Model, ModelCatalog, ModelProvider, Protocol, ProviderUpdate } from '../agent/settings.ts';
+import { apiKeyField, apiKeyFieldMarkup } from './api-key-field.ts';
+import { editableCombobox } from './combobox.ts';
 import { element } from './elements.ts';
 
 // 表示供应商和模型都能复用的可折叠编辑行。
@@ -10,22 +12,26 @@ type EditRow = { node: HTMLDetailsElement };
 // 按列表跟踪正在拖动的行，避免跨列表排序。
 const draggedRows = new WeakMap<HTMLElement, EditRow>();
 
-// 将模型编辑节点、稳定键和表单读取函数关联起来。
-type ModelRow = EditRow & { key: string; read: () => Model };
+// 将模型行的表单和候选项关联起来。
+type ModelRow = EditRow & { key: string; read: () => Model; picker: ReturnType<typeof editableCombobox> };
 
 // 将供应商编辑节点、模型行和原始配置关联起来。
 type ProviderRow = EditRow & { models: ModelRow[]; read: () => ProviderUpdate; previous?: ModelProvider };
 
-// 创建可在设置表单里使用的普通按钮。
-function button(text: string) {
-  const result = document.createElement('button');
-  result.type = 'button';
-  result.textContent = text;
-  return result;
+// 为列表标题生成右对齐的添加入口。
+function listHeading(tag: 'h3' | 'h4', title: string, addLabel: string, attribute: string) {
+  return `
+    <div class="provider-list-heading">
+      <${tag}>${title}</${tag}>
+      <button class="provider-icon-button" type="button" aria-label="${addLabel}" title="${addLabel}" ${attribute}>
+        <span class="provider-add-icon" aria-hidden="true">+</span>
+      </button>
+    </div>`;
 }
 
-// 为同一列表内的行提供移动、删除和拖放。
-function orderedRow<T extends EditRow>(row: T, rows: T[], list: HTMLElement, label: string, changed: () => void) {
+// 为列表行绑定拖动排序和标题栏删除操作。
+function orderedRow<T extends EditRow>(row: T, rows: T[], list: HTMLElement, add: HTMLButtonElement, label: string,
+  changed: () => void, onRemove?: () => void) {
   const summary = element(row.node, 'summary');
   const handle = document.createElement('span');
   handle.className = 'drag-handle';
@@ -34,7 +40,27 @@ function orderedRow<T extends EditRow>(row: T, rows: T[], list: HTMLElement, lab
   handle.title = `拖动调整${label}顺序`;
   handle.setAttribute('aria-hidden', 'true');
   summary.prepend(handle);
-  const actions = element(row.node, '[data-order-actions]');
+
+  const remove = document.createElement('button');
+  remove.type = 'button';
+  remove.className = 'provider-icon-button provider-remove';
+  remove.setAttribute('aria-label', `删除${label}`);
+  remove.title = `删除${label}`;
+  remove.innerHTML = '<span class="provider-trash-icon" aria-hidden="true"></span>';
+  summary.append(remove);
+  remove.addEventListener('click', (event) => {
+    // 删除折叠行时不触发标题栏的展开操作，并把焦点交给相邻行。
+    event.preventDefault();
+    event.stopPropagation();
+    const index = rows.indexOf(row);
+    rows.splice(index, 1);
+    row.node.remove();
+    onRemove?.();
+    changed();
+    const next = rows[index] ?? rows[index - 1];
+    if (next) element<HTMLElement>(next.node, 'summary').focus();
+    else add.focus();
+  });
 
   // 同时调整表单节点和行数组的顺序。
   function move(source: T, target: T, after: boolean) {
@@ -47,25 +73,6 @@ function orderedRow<T extends EditRow>(row: T, rows: T[], list: HTMLElement, lab
     else target.node.before(source.node);
     changed();
   }
-
-  for (const direction of [-1, 1]) {
-    const control = button(direction < 0 ? '上移' : '下移');
-    control.setAttribute('aria-label', `${control.textContent}${label}`);
-    control.addEventListener('click', () => {
-      const target = rows[rows.indexOf(row) + direction];
-      if (target) move(row, target, direction > 0);
-      control.focus();
-    });
-    actions.append(control);
-  }
-  const remove = button('删除');
-  remove.setAttribute('aria-label', `删除${label}`);
-  remove.addEventListener('click', () => {
-    rows.splice(rows.indexOf(row), 1);
-    row.node.remove();
-    changed();
-  });
-  actions.append(remove);
 
   // 记录拖动来源，并仅允许当前列表内交换位置。
   handle.addEventListener('dragstart', (event) => {
@@ -97,11 +104,12 @@ function orderedRow<T extends EditRow>(row: T, rows: T[], list: HTMLElement, lab
 /** 挂载供应商和模型目录编辑表单。 */
 export function providerSettings(root: HTMLElement) {
   root.innerHTML = `
-    <h2>模型供应商</h2>
+    <h2>模型</h2>
     <label>默认模型<select data-default-model></select></label>
-    <div class="provider-list" data-provider-list></div>
-    <div class="settings-actions"><button type="button" data-add-provider>添加供应商</button></div>`;
+    ${listHeading('h3', '模型供应商', '添加模型供应商', 'data-add-provider')}
+    <div class="provider-list" data-provider-list></div>`;
   const list = element(root, '[data-provider-list]');
+  const addProviderButton = element<HTMLButtonElement>(root, '[data-add-provider]');
   const defaultSelect = element<HTMLSelectElement>(root, '[data-default-model]');
   let providers: ProviderRow[] = [];
   let nextKey = 0;
@@ -127,6 +135,7 @@ export function providerSettings(root: HTMLElement) {
   // 创建供应商编辑行，并按需填入已保存的配置。
   function addProvider(previous?: ModelProvider) {
     const node = document.createElement('details');
+    const keyID = `provider-api-key-${++nextKey}`;
     node.className = 'provider-card';
     node.innerHTML = `
       <summary><span data-title></span></summary>
@@ -135,34 +144,23 @@ export function providerSettings(root: HTMLElement) {
         <label>显示名称<input data-provider-name></label>
         <label>协议<select data-protocol></select></label>
         <label>Base URL<input type="url" autocomplete="off" data-url required></label>
-        <label>API Key<input type="password" autocomplete="off" data-key></label>
-        <label class="setting-check" data-clear-key hidden><input type="checkbox">清除已保存的 API Key</label>
+        ${apiKeyFieldMarkup(keyID)}
+        ${listHeading('h4', '模型', '添加模型', 'data-add-model')}
         <div class="provider-list" data-model-list></div>
-        <div class="provider-actions">
-          <button type="button" data-add-model>添加模型</button>
-          <button type="button" data-discover>读取上游模型</button>
-        </div>
-        <p class="settings-status" data-discovery-status role="status" hidden></p>
-        <div class="provider-actions" data-order-actions></div>
+        <p class="settings-status" id="provider-discovery-${++nextKey}" role="status" hidden></p>
       </div>`;
     const id = element<HTMLInputElement>(node, '[data-provider-id]');
     const name = element<HTMLInputElement>(node, '[data-provider-name]');
     const protocol = element<HTMLSelectElement>(node, '[data-protocol]');
     const url = element<HTMLInputElement>(node, '[data-url]');
-    const key = element<HTMLInputElement>(node, '[data-key]');
-    const clearKey = element(node, '[data-clear-key]');
-    const clear = element<HTMLInputElement>(clearKey, 'input');
+    const key = apiKeyField(node, keyID, resetModelList);
     const title = element(node, '[data-title]');
     const modelList = element(node, '[data-model-list]');
-    const discover = element<HTMLButtonElement>(node, '[data-discover]');
-    const status = element(node, '[data-discovery-status]');
-    const suggestions = document.createElement('datalist');
-    suggestions.id = `provider-models-${++nextKey}`;
-    node.append(suggestions);
-    const efforts = document.createElement('datalist');
-    efforts.id = `provider-efforts-${nextKey}`;
-    efforts.append(...reasoningEfforts.map((value) => new Option(value, value)));
-    node.append(efforts);
+    const addModelButton = element<HTMLButtonElement>(node, '[data-add-model]');
+    const status = element<HTMLElement>(node, '[role="status"]');
+    const scope = discoveryScope.signal;
+    let request: AbortController | undefined;
+    let options: { value: string; label: string }[] | undefined;
     for (const [value, { label }] of Object.entries(protocols)) protocol.add(new Option(label, value));
     protocol.value = previous?.protocol ?? defaultProtocol;
     url.value = previous?.baseURL ?? protocols[protocol.value as Protocol].baseURL;
@@ -177,13 +175,13 @@ export function providerSettings(root: HTMLElement) {
     }) };
     providers.push(row);
     list.append(node);
-    orderedRow(row, providers, list, '供应商', refreshDefault);
+    orderedRow(row, providers, list, addProviderButton, '供应商', refreshDefault, () => request?.abort());
 
     // 空字符串表示主动清除密钥，省略时由服务决定是否沿用。
     function connection() {
       return {
         protocol: protocol.value as Protocol, baseURL: url.value.trim(),
-        ...(clear.checked ? { apiKey: '' } : key.value.trim() ? { apiKey: key.value.trim() } : {}),
+        apiKey: key.read(),
       };
     }
 
@@ -199,40 +197,33 @@ export function providerSettings(root: HTMLElement) {
     function sameEndpoint() {
       return previous?.protocol === protocol.value && previous.baseURL === url.value.trim().replace(/\/+$/, '');
     }
-    let request: AbortController | undefined;
 
-    // 连接发生变化时取消发现并重置选项和凭据提示。
-    function connectionChanged() {
+    // 连接或密钥变化后，丢弃原连接的模型候选项。
+    function resetModelList() {
       request?.abort();
       request = undefined;
-      discover.disabled = false;
-      suggestions.replaceChildren();
+      options = undefined;
+      for (const model of models) model.picker.setOptions([]);
       status.hidden = true;
+    }
 
-      // 仅在原端点有密钥时提供清除选项，切到其他端点时清掉该操作。
-      clearKey.hidden = !previous?.hasAPIKey || !sameEndpoint();
-      if (clearKey.hidden) clear.checked = false;
-      key.disabled = clear.checked;
-      key.placeholder = clearKey.hidden ? '可留空' : '已保存，留空可保留';
+    function connectionChanged() {
+      key.setSaved(Boolean(previous?.hasAPIKey && sameEndpoint()));
+      resetModelList();
     }
 
     protocol.addEventListener('change', () => {
       url.value = protocols[protocol.value as Protocol].baseURL;
-      key.value = '';
+      key.reset();
       connectionChanged();
     });
     url.addEventListener('input', connectionChanged);
-    key.addEventListener('input', connectionChanged);
-    clear.addEventListener('change', connectionChanged);
 
-    // 发现当前连接可用的模型，并丢弃不再匹配表单的结果。
-    discover.addEventListener('click', async () => {
-      if (!url.reportValidity()) return;
+    // 首次与模型 ID 字段交互时读取同一供应商的候选模型。
+    async function loadModels() {
+      if (request || options || !url.value.trim() || !url.validity.valid) return;
       const current = request = new AbortController();
-
-      // 连接变动、整个表单重建和超时都可以取消发现请求。
-      const signal = AbortSignal.any([current.signal, discoveryScope.signal, AbortSignal.timeout(17000)]);
-      discover.disabled = true;
+      const signal = AbortSignal.any([current.signal, scope, AbortSignal.timeout(17000)]);
       status.hidden = false;
       status.classList.remove('invalid');
       status.textContent = '正在读取模型列表…';
@@ -243,35 +234,51 @@ export function providerSettings(root: HTMLElement) {
         const ids = previous && sameEndpoint() && draft.apiKey === undefined
           ? await discoverProviderModels(previous.id, signal)
           : await listModels(draft, signal, previous?.id);
-        if (current.signal.aborted) return;
-        suggestions.replaceChildren(...ids.map((id) => new Option(id, id)));
-        status.textContent = ids.length ? `已读取 ${ids.length} 个模型，可在模型 ID 输入框选择` : '上游模型列表为空，可手动输入';
+        if (signal.aborted) return;
+        options = ids.map((id) => ({ value: id, label: id }));
+        for (const model of models) model.picker.setOptions(options);
+        status.hidden = ids.length > 0;
+        status.textContent = ids.length ? '' : '上游模型列表为空，可手动输入';
       } catch (error) {
-        if (current.signal.aborted || !node.isConnected) return;
+        if (current.signal.aborted || scope.aborted) return;
         status.classList.add('invalid');
-        status.textContent = error instanceof Error && error.name !== 'TimeoutError' ? error.message : '读取模型列表超时';
+        const message = error instanceof Error && error.name === 'TimeoutError' ? '读取模型列表超时'
+          : error instanceof Error && error.name === 'Error' ? error.message : '无法读取模型列表';
+        status.textContent = `${message}，可手动输入`;
       } finally {
-        // 仅由仍活跃的请求恢复按钮，避免较早请求结束时解锁新请求。
-        if (request === current) {
-          request = undefined;
-          discover.disabled = false;
-        }
+        if (request === current) request = undefined;
       }
-    });
+    }
 
     // 为供应商新增一行可编辑的模型配置。
     function addModel(previous?: Model) {
       const detail = document.createElement('details');
+      const modelKey = String(++nextKey);
       detail.className = 'provider-card';
       detail.innerHTML = `
         <summary><span data-title></span></summary>
         <div class="provider-fields">
-          <label>模型 ID<input data-id list="${suggestions.id}" autocomplete="off" required></label>
+          <div class="settings-combobox">
+            <label for="provider-model-id-${modelKey}">模型 ID</label>
+            <div class="combobox-input">
+              <input id="provider-model-id-${modelKey}" data-id autocomplete="off" spellcheck="false" role="combobox"
+                aria-autocomplete="list" aria-controls="provider-model-ids-${modelKey}" aria-expanded="false"
+                aria-describedby="${status.id}" required>
+            </div>
+            <ul id="provider-model-ids-${modelKey}" class="combobox-options" role="listbox" aria-label="模型 ID" hidden></ul>
+          </div>
           <label>显示名称<input data-name></label>
-          <label>思考强度<input data-effort list="${efforts.id}" placeholder="默认"></label>
+          <div class="settings-combobox">
+            <label for="provider-model-effort-${modelKey}">思考强度</label>
+            <div class="combobox-input">
+              <input id="provider-model-effort-${modelKey}" data-effort autocomplete="off" spellcheck="false"
+                placeholder="默认" role="combobox" aria-autocomplete="none"
+                aria-controls="provider-model-efforts-${modelKey}" aria-expanded="false">
+            </div>
+            <ul id="provider-model-efforts-${modelKey}" class="combobox-options" role="listbox" aria-label="思考强度" hidden></ul>
+          </div>
           <label>上下文长度（Token）<input data-context type="number" min="1" max="${Number.MAX_SAFE_INTEGER}" step="1" required></label>
           <label class="setting-check"><input type="checkbox" data-vision>支持视觉理解</label>
-          <div class="provider-actions" data-order-actions></div>
         </div>`;
       const id = element<HTMLInputElement>(detail, '[data-id]');
       const name = element<HTMLInputElement>(detail, '[data-name]');
@@ -279,18 +286,24 @@ export function providerSettings(root: HTMLElement) {
       const context = element<HTMLInputElement>(detail, '[data-context]');
       const vision = element<HTMLInputElement>(detail, '[data-vision]');
       const title = element(detail, '[data-title]');
+
+      // 模型 ID 按输入筛选，思考强度保留完整候选列表。
+      const picker = editableCombobox(id, element(detail, `#provider-model-ids-${modelKey}`), true);
+      if (options) picker.setOptions(options);
+      editableCombobox(effort, element(detail, `#provider-model-efforts-${modelKey}`)).setOptions(reasoningEffortOptions);
+      for (const event of ['focus', 'click', 'input']) id.addEventListener(event, loadModels);
       id.value = previous?.id ?? '';
       name.value = previous?.name ?? '';
       effort.value = previous?.reasoningEffort ?? '';
       context.value = String(previous?.maxInputToken ?? defaultMaxInputToken);
       vision.checked = previous?.vision ?? true;
-      const model: ModelRow = { node: detail, key: String(++nextKey), read: () => ({
+      const model: ModelRow = { node: detail, key: modelKey, picker, read: () => ({
         id: id.value.trim(), name: name.value.trim(), reasoningEffort: effort.value.trim(),
         maxInputToken: context.valueAsNumber, vision: vision.checked,
       }) };
       models.push(model);
       modelList.append(detail);
-      orderedRow(model, models, modelList, '模型', refreshDefault);
+      orderedRow(model, models, modelList, addModelButton, '模型', refreshDefault);
 
       // 刷新模型折叠标题和默认模型候选项。
       function syncModel() {
@@ -298,6 +311,7 @@ export function providerSettings(root: HTMLElement) {
         refreshDefault();
       }
       id.addEventListener('input', syncModel);
+      id.addEventListener('change', syncModel);
       name.addEventListener('input', syncModel);
       syncModel();
       if (!previous) {
@@ -305,7 +319,7 @@ export function providerSettings(root: HTMLElement) {
         id.focus();
       }
     }
-    element(node, '[data-add-model]').addEventListener('click', () => addModel());
+    addModelButton.addEventListener('click', () => addModel());
     previous?.models.forEach(addModel);
     syncTitle();
     connectionChanged();
@@ -315,7 +329,7 @@ export function providerSettings(root: HTMLElement) {
     }
   }
 
-  element(root, '[data-add-provider]').addEventListener('click', () => addProvider());
+  addProviderButton.addEventListener('click', () => addProvider());
 
   return {
     // 取消旧发现请求，并从最新设置重建编辑表单。

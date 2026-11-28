@@ -42,6 +42,7 @@ export function editableCombobox(input: HTMLInputElement, list: HTMLElement, sea
   function close() {
     if (!open) return;
     open = false;
+    query = '';
     render();
   }
 
@@ -50,6 +51,12 @@ export function editableCombobox(input: HTMLInputElement, list: HTMLElement, sea
     input.value = value;
     query = '';
     close();
+  }
+
+  // 仅在用户选中候选项时通知表单。
+  function select(option: Option) {
+    setValue(option.value);
+    input.dispatchEvent(new Event('change', { bubbles: true }));
   }
 
   input.addEventListener('focus', show);
@@ -69,7 +76,7 @@ export function editableCombobox(input: HTMLInputElement, list: HTMLElement, sea
       close();
     } else if (event.key === 'Enter' && active >= 0) {
       event.preventDefault();
-      setValue(visible[active].value);
+      select(visible[active]);
     } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
       show();
       if (list.hidden) return;
@@ -91,7 +98,7 @@ export function editableCombobox(input: HTMLInputElement, list: HTMLElement, sea
   list.addEventListener('click', (event) => {
     if (!(event.target instanceof HTMLElement)) return;
     const index = event.target.closest<HTMLElement>('[data-option-index]')?.dataset.optionIndex;
-    if (index !== undefined) setValue(visible[Number(index)].value);
+    if (index !== undefined) select(visible[Number(index)]);
   });
 
   return {

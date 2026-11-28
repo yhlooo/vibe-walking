@@ -1,4 +1,4 @@
-import { defaultMaxInputToken, defaultProtocol, findModel, listModels, protocols, readSettings, reasoningEfforts, saveSettings } from './agent/settings.ts';
+import { defaultMaxInputToken, defaultProtocol, findModel, listModels, protocols, readSettings, reasoningEffortOptions, saveSettings } from './agent/settings.ts';
 import type { ModelCatalog, Protocol, SettingsUpdate } from './agent/settings.ts';
 import type { Conversation } from './agent/agent.ts';
 import { mountEditor } from './editor/editor.ts';
@@ -6,6 +6,7 @@ import { playableError } from './level/definition.ts';
 import type { LevelDefinition } from './level/definition.ts';
 import { createLevel, migrateDraft, migrateProgress, readCatalog, readProgress, updateLevel, updateLevelOrder, updateProgress } from './storage/game.ts';
 import type { LevelEntry, Progress } from './storage/game.ts';
+import { apiKeyField, apiKeyFieldMarkup } from './ui/api-key-field.ts';
 import { editableCombobox } from './ui/combobox.ts';
 import { element } from './ui/elements.ts';
 import { renderHome, renderLevels } from './ui/front.ts';
@@ -35,12 +36,9 @@ app.innerHTML = `
           <h2>模型连接</h2>
           <label>协议<select data-protocol></select></label>
           <label>Base URL<input type="url" autocomplete="off" data-base-url required></label>
-          <div class="api-key-field">
-            <label>API Key<input type="password" autocomplete="off" aria-describedby="api-key-note" data-api-key></label>
-            <p class="api-key-note" id="api-key-note">（所有 API Key 都在本地存储仅用于调用模型 API ，不会上传到任何第三方）</p>
-          </div>
+          ${apiKeyFieldMarkup('setup-api-key')}
           <div class="settings-combobox">
-            <label id="model-label" for="model-id">模型</label>
+            <label id="model-label" for="model-id">模型 ID</label>
             <div class="combobox-input">
               <input id="model-id" type="text" autocomplete="off" spellcheck="false" role="combobox"
                 aria-autocomplete="list" aria-controls="model-ids" aria-expanded="false" aria-describedby="model-list-status" data-model-id required>
@@ -105,7 +103,7 @@ const modelListStatus = element(settingsForm, '#model-list-status');
 const contextInput = element<HTMLInputElement>(settingsForm, '[data-context-limit]');
 const effortInput = element<HTMLInputElement>(settingsForm, '[data-effort]');
 const effortPicker = editableCombobox(effortInput, element(settingsForm, '#effort-options'));
-const keyInput = element<HTMLInputElement>(settingsForm, '[data-api-key]');
+const setupKey = apiKeyField(settingsForm, 'setup-api-key', resetModelList);
 const settingsStatus = element(settingsForm, '[data-settings-status]');
 const visionInput = element<HTMLInputElement>(settingsForm, '[data-vision]');
 const providerFields = element<HTMLFieldSetElement>(settingsForm, '[data-provider-fields]');
@@ -113,10 +111,7 @@ const providerEditor = providerSettings(providerFields);
 const submitSettings = element<HTMLButtonElement>(settingsForm, 'button[type="submit"]');
 
 for (const [protocol, { label }] of Object.entries(protocols)) protocolInput.add(new Option(label, protocol));
-effortPicker.setOptions([
-  { value: '', label: '默认' },
-  ...reasoningEfforts.map((level) => ({ value: level, label: level })),
-]);
+effortPicker.setOptions(reasoningEffortOptions);
 
 let library: LevelEntry[] = [];
 let warnings: string[] = [];
@@ -396,7 +391,7 @@ function closePlaySetup() {
   usernameFields.hidden = providerFields.hidden = false;
   modelFields.hidden = true;
   lockSettings(saving);
-  keyInput.value = '';
+  setupKey.reset();
   resetModelList();
 }
 
@@ -407,14 +402,12 @@ function settingsMessage(text: string, error = false) {
   settingsStatus.classList.toggle('invalid', error);
 }
 
-// 根据当前连接显示密钥保留提示。
-function updateKeyHint() {
+// 根据当前连接更新已保存密钥的显示状态。
+function updateSavedKey() {
   const provider = setupProvider();
   const sameEndpoint = provider?.protocol === protocolInput.value &&
     provider.baseURL === addressInput.value.trim().replace(/\/+$/, '');
-  const retainsKey = Boolean(sameEndpoint && provider?.hasAPIKey);
-  keyInput.placeholder = retainsKey ? '已保存，留空可保留'
-    : protocolInput.value === 'OllamaChat' ? '本地 Ollama 可留空' : '输入模型 API Key';
+  setupKey.setSaved(Boolean(sameEndpoint && provider?.hasAPIKey));
 }
 
 // 同步模型列表的加载或错误反馈。
@@ -435,10 +428,9 @@ function resetModelList() {
 
 // 从快速设置表单读取临时模型连接。
 function modelConnection() {
-  const apiKey = keyInput.value.trim();
   return {
     protocol: protocolInput.value as Protocol, baseURL: addressInput.value.trim(),
-    ...(apiKey ? { apiKey } : {}),
+    apiKey: setupKey.read(),
   };
 }
 
@@ -482,8 +474,8 @@ function fillSettings() {
   contextInput.value = String(defaultMaxInputToken / 1000);
   effortPicker.setValue('');
   visionInput.checked = true;
-  keyInput.value = '';
-  updateKeyHint();
+  setupKey.reset();
+  updateSavedKey();
   resetModelList();
 }
 
@@ -571,15 +563,14 @@ window.addEventListener('keydown', (event) => {
 protocolInput.addEventListener('change', () => {
   addressInput.value = protocols[protocolInput.value as Protocol].baseURL;
   addressInput.placeholder = addressInput.value;
-  keyInput.value = '';
-  updateKeyHint();
+  setupKey.reset();
+  updateSavedKey();
   resetModelList();
 });
 addressInput.addEventListener('input', () => {
-  updateKeyHint();
+  updateSavedKey();
   resetModelList();
 });
-keyInput.addEventListener('input', resetModelList);
 modelInput.addEventListener('focus', loadModelOptions);
 modelInput.addEventListener('click', loadModelOptions);
 

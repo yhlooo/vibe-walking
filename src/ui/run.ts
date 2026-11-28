@@ -42,13 +42,20 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
           <a class="scene-action primary" data-play-next hidden>下一关 →</a>
         </nav>`}
       <aside class="panel run-sidebar">
-        <div class="sidebar-header"><h2>与 Vibe 对话</h2><button class="text-button" type="button" data-clear-chat disabled>清空历史</button></div>
+        <div class="sidebar-header"><h2>与 Vibe 对话</h2><span class="subtle" data-run-status></span><button class="text-button" type="button" data-clear-chat disabled>清空历史</button></div>
         <div class="messages" id="vibe-chat-history" role="log" aria-label="对话与工具事件" data-messages></div>
         <div class="chat-divider" role="separator" tabindex="0" aria-orientation="horizontal"
           aria-label="调整对话历史和输入栏高度" aria-controls="vibe-chat-history" data-chat-divider></div>
         <form class="composer" data-composer>
           <textarea aria-label="发给 Vibe 的消息" placeholder="告诉 Vibe 下一步怎么做…" rows="3"></textarea>
-          <div class="composer-footer"><span class="subtle" data-run-status></span><button class="text-button model-trigger" type="button" aria-haspopup="dialog" data-model-picker hidden></button><button class="text-button" type="button" data-connect>配置模型</button><button class="primary" type="submit" disabled>发送</button></div>
+          <div class="composer-footer">
+            <div class="composer-model-controls" data-model-controls hidden>
+              <button class="model-control model-trigger" type="button" data-model-picker></button>
+              <button class="model-control model-parameters-trigger" type="button" data-model-parameters></button>
+            </div>
+            <button class="text-button" type="button" data-connect>配置模型</button>
+            <button class="primary" type="submit" disabled>发送</button>
+          </div>
         </form>
         ${editor ? `
           <div class="recording-panel" data-recording hidden>
@@ -103,7 +110,9 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   const input = element<HTMLTextAreaElement>(composer, 'textarea');
   const send = element<HTMLButtonElement>(composer, 'button[type="submit"]');
   const connect = element<HTMLButtonElement>(composer, '[data-connect]');
-  const modelTrigger = element<HTMLButtonElement>(composer, '[data-model-picker]');
+  const modelControls = element(composer, '[data-model-controls]');
+  const modelTrigger = element<HTMLButtonElement>(modelControls, '[data-model-picker]');
+  const optionsTrigger = element<HTMLButtonElement>(modelControls, '[data-model-parameters]');
   const clearChat = element<HTMLButtonElement>(root, '[data-clear-chat]');
   const status = element(root, '[data-run-status]');
   const stageStatus = element(root, '[data-stage-status]');
@@ -132,10 +141,10 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   let model = findModel(catalog, catalog.defaultModel);
   let selection: ModelSettings | undefined;
 
-  // 将当前场景中的模型选择应用给新的 Agent。
-  const picker = modelPicker(root, modelTrigger, signal, (picked) => {
+  // 更新页面内的模型选择。正在生成时，由当前回合继续使用原 Agent。
+  const picker = modelPicker(root, modelTrigger, optionsTrigger, signal, (picked) => {
     selection = model = picked;
-    replaceAgent();
+    refreshIdleAgent();
     picker.showModel(model);
     refreshStatus();
   });
@@ -176,8 +185,9 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     send.textContent = busy ? '中断' : '发送';
     connect.textContent = username ? '配置模型' : '设置用户名';
     connect.hidden = Boolean(model && username) || manual;
-    modelTrigger.hidden = !model || !username || manual;
-    modelTrigger.disabled = busy || resultPending || !chat;
+    modelControls.hidden = !model || !username || manual;
+    modelTrigger.disabled = optionsTrigger.disabled = !chat && !resultPending;
+    if (modelControls.hidden || modelTrigger.disabled) picker.close();
     input.disabled = !chat;
     input.placeholder = won && chat ? '和 Vibe 聊聊…' : '告诉 Vibe 下一步怎么做…';
     clearChat.hidden = won && result !== null;
@@ -374,6 +384,11 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     }, conversation, username, requestTracker);
   }
 
+  // 生成和通关答复结束前保留当前 Agent 及其模型快照。
+  function refreshIdleAgent() {
+    if (!agent?.busy && (!resultPending || resultReadyAt !== undefined)) replaceAgent();
+  }
+
   // 重开物理世界，清理本局计时及结算状态。
   function reset() {
     if (runtime.world.outcome === 'lost') conversation.pendingSystemInfo = respawnInfo;
@@ -523,7 +538,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   }, { signal });
 
   connect.addEventListener('click', options.openSettings, { signal });
-  modelTrigger.addEventListener('click', () => { if (model) picker.open(catalog, model); }, { signal });
+  modelTrigger.addEventListener('click', () => { if (model) picker.prepare(catalog, model); }, { signal });
   input.addEventListener('input', refreshStatus, { signal });
   input.addEventListener('keydown', (event) => {
     // 普通回车用于发送，Shift 回车或输入法组合期间保留文字输入行为。
@@ -545,6 +560,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     const text = input.value.trim();
     if (send.disabled || !agent || !text) return;
     const current = agent;
+    const turnModel = model;
+    const turnUsername = username;
     input.value = '';
 
     // 收到首条有效玩家指令时开始计时，并立即存下起点。
@@ -557,6 +574,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
 
     // 确认仍是当前场景的活跃回合，才写入指令执行后的存档。
     if (!signal.aborted && current === agent) {
+      if (model !== turnModel || username !== turnUsername) replaceAgent();
       checkpoint(true);
       refreshStatus();
     }
@@ -607,15 +625,17 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       }
       picker.showModel(model);
       username = nextUsername;
-      if (!resultPending || resultReadyAt !== undefined) replaceAgent();
+      refreshIdleAgent();
       refreshStatus();
     },
     // 协调物理暂停、界面状态和待显示的结算。
     setPaused(nextPaused: boolean) {
       paused = nextPaused;
       runtime.setPaused(paused);
-      if (paused) refreshRecording();
-      else {
+      if (paused) {
+        picker.close();
+        refreshRecording();
+      } else {
         if (manual) canvas.focus();
         showResultWhenReady();
         refreshStatus();
