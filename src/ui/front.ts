@@ -3,8 +3,15 @@ import { drawScene } from '../render/scene.ts';
 import type { LevelEntry, Progress } from '../storage/game.ts';
 import { element, formatDuration } from './elements.ts';
 
+/** 优先进入最近的可玩关卡，否则选取首个尚未完成的内置关卡。 */
+export function homeLevel(levels: LevelEntry[], progress: Progress) {
+  const recent = levels.find(({ id, level }) => id === progress.recentLevel && !playableError(level));
+  const builtIns = levels.filter(({ kind }) => kind === 'builtin');
+  return recent ?? builtIns.find(({ id }) => !progress.levels[id]?.completedAt) ?? builtIns[0];
+}
+
 /** 渲染首页并根据游玩进度选择主操作。 */
-export function renderHome(root: HTMLElement, builtInLevels: LevelEntry[], progress: Progress) {
+export function renderHome(root: HTMLElement, progress: Progress) {
   root.innerHTML = `
     <section class="home-scene">
       <div class="home-content">
@@ -19,7 +26,7 @@ export function renderHome(root: HTMLElement, builtInLevels: LevelEntry[], progr
         </h1>
         <p>踩下红色按钮</p>
         <nav class="home-actions" aria-label="主界面">
-          <a class="scene-action primary" data-start></a>
+          <a class="scene-action primary" href="#/continue" data-start></a>
           <a class="scene-action" href="#/levels">关卡</a>
           <a class="scene-action" href="#/levels/custom">创作</a>
           <a class="scene-action" href="#/settings">设置</a>
@@ -27,16 +34,7 @@ export function renderHome(root: HTMLElement, builtInLevels: LevelEntry[], progr
       </div>
     </section>`;
 
-  // 仅将仍匹配物理修订号的未完成存档列入继续选项。
-  const unfinished = builtInLevels.filter(({ id, revision }) => {
-    const record = progress.levels[id];
-    return record?.revision === revision && record.run;
-  }).sort((a, b) => (progress.levels[b.id].savedAt ?? 0) - (progress.levels[a.id].savedAt ?? 0));
-  const resume = unfinished.find(({ id }) => id === progress.recentBuiltin) ?? unfinished[0];
-  const first = builtInLevels.find(({ id }) => !progress.levels[id]?.completedAt) ?? builtInLevels[0];
-  const start = element<HTMLAnchorElement>(root, '[data-start]');
-  start.textContent = resume ? '继续游戏' : '开始游戏';
-  start.href = `#/play/${resume?.id ?? first.id}`;
+  element(root, '[data-start]').textContent = progress.recentLevel ? '继续游戏' : '开始游戏';
 }
 
 /** 绘制内置或自建关卡列表、成绩和操作入口。 */
@@ -126,7 +124,7 @@ export function renderLevels(
     const detail = element(card, '[data-level-description]');
     detail.textContent = problem ?? description ?? '';
     detail.hidden = !detail.textContent;
-    const { completedAt, bestDurationMS } = progress.levels[id] ?? {};
+    const { completedAt, bestDurationMS, completions } = progress.levels[id] ?? {};
     element(card, '[data-level-best]').textContent = `最佳通关耗时 · ${bestDurationMS === undefined ? '暂无记录' : formatDuration(bestDurationMS)}`;
     const state = element(card, '[data-level-state]');
     state.textContent = problem ? '待完善' : completedAt ? '已通关' : '未通关';
@@ -136,6 +134,26 @@ export function renderLevels(
       time.dateTime = completedAt;
       time.textContent = `首次通关 · ${new Date(completedAt).toLocaleString()}`;
       time.hidden = false;
+    }
+    if (completions?.length) {
+      const history = document.createElement('details');
+      history.className = 'level-history';
+      const summary = document.createElement('summary');
+      summary.textContent = '通关记录';
+      const records = document.createElement('ul');
+
+      // 每条记录保留同一次通关的模型、时间和成绩。
+      for (const completion of [...completions].reverse()) {
+        const record = document.createElement('li');
+        const time = document.createElement('time');
+        time.dateTime = completion.completedAt;
+        time.textContent = new Date(completion.completedAt).toLocaleString();
+        const duration = completion.durationMS === undefined ? '未计时' : formatDuration(completion.durationMS);
+        record.append(time, ` · ${completion.model ?? '无模型动作'} · ${duration}`);
+        records.append(record);
+      }
+      history.append(summary, records);
+      card.append(history);
     }
     drawScene(element<HTMLCanvasElement>(card, 'canvas'), {
       level, player: { ...level.spawn, facing: 1 }, outcome: 'active',

@@ -1,7 +1,7 @@
 import { toolMessages } from '../agent/prompts.ts';
 import { Recorder } from './actions.ts';
 import { idleInput, stepMS, World } from './world.ts';
-import type { Direction, Outcome, Snapshot, StepInput, WorldState } from './world.ts';
+import type { Direction, Outcome, Snapshot, StepInput } from './world.ts';
 import type { LevelDefinition } from '../level/definition.ts';
 
 // 将 WASD、方向键和空格映射到游戏动作。
@@ -15,6 +15,7 @@ type Sequence = {
   steps: StepInput[];
   index: number;
   pending?: StepInput;
+  onControl?: () => void;
   resolve: () => void;
   reject: (error: DOMException) => void;
 };
@@ -35,8 +36,8 @@ export class Runtime {
   private frame: number;
 
   // 建立世界、绑定输入监听并启动渲染时钟。
-  constructor(level: LevelDefinition, manual: boolean, draw: (snapshot: Snapshot) => void, ended: (outcome: Outcome) => void, saved?: WorldState) {
-    this.world = new World(level, saved);
+  constructor(level: LevelDefinition, manual: boolean, draw: (snapshot: Snapshot) => void, ended: (outcome: Outcome) => void) {
+    this.world = new World(level);
     this.manual = manual;
     if (manual) this.recorder = new Recorder();
 
@@ -117,7 +118,7 @@ export class Runtime {
   }
 
   // 装载动作队列并等待模拟执行完成。
-  async execute(steps: StepInput[], signal?: AbortSignal): Promise<void> {
+  async execute(steps: StepInput[], signal?: AbortSignal, onControl?: () => void): Promise<void> {
     signal?.throwIfAborted();
     if (this.manual || this.sequence || !steps.length || this.world.outcome !== 'active') {
       throw new Error(toolMessages.cannotExecute);
@@ -126,7 +127,7 @@ export class Runtime {
     const cancel = () => this.cancelSequence();
     signal?.addEventListener('abort', cancel, { once: true });
     try {
-      await new Promise<void>((resolve, reject) => { this.sequence = { steps, index: 0, resolve, reject }; });
+      await new Promise<void>((resolve, reject) => { this.sequence = { steps, index: 0, onControl, resolve, reject }; });
     } finally {
       signal?.removeEventListener('abort', cancel);
     }
@@ -190,6 +191,11 @@ export class Runtime {
       if (!this.recorder.started) return this.world.outcome;
     } else if (current) {
       input = current.pending ?? current.steps[current.index++];
+      // 只在实际执行移动或跳跃时记录动作来源。
+      if (current.onControl && (input.direction || input.jump)) {
+        current.onControl();
+        current.onControl = undefined;
+      }
     }
 
     const remaining = this.world.step(input);

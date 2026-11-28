@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-logr/logr"
 
@@ -118,16 +120,17 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	request("PUT", "levels", map[string][]string{"ids": {legacy.ID, custom.ID}}, 200)
 	assertOrder(legacy.ID, custom.ID)
 
-	var run levels.Run
-	run.World.Player.X, run.World.Player.Y, run.World.Player.Facing = 7.25, 8, 1
-	elapsed := int64(1000)
-	run.ElapsedMS = &elapsed
-	update := levels.ProgressUpdate{Revision: builtin.Revision, SavedAt: 10, Recent: true, Run: &run}
-	request("PUT", "progress/"+builtin.ID, update, 200)
-	customRun := run
-	moveDistance := 0.2
-	customRun.World.MoveDistance = &moveDistance
-	request("PUT", "progress/"+custom.ID, levels.ProgressUpdate{Revision: saved.Revision, SavedAt: 11, Recent: true, Run: &customRun}, 200)
+	// 模拟旧服务保存过的通关汇总和未完成尝试。
+	progressPath := filepath.Join(dir, "progress.json")
+	oldProgress := fmt.Sprintf(`{
+		"recentBuiltin":%q,"recentBuiltinAt":10,"levels":{
+			%q:{"completedAt":"2026-11-20T10:00:00Z","bestDurationMS":4300,"run":{"elapsedMS":1000},"savedAt":10},
+			%q:{"run":{"elapsedMS":2000},"savedAt":11}
+		}
+	}`, builtin.ID, builtin.ID, custom.ID)
+	if err := os.WriteFile(progressPath, []byte(oldProgress), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	handler = start()
 	reloaded := gameResponse[levels.Entry](t, request("GET", levelPath, nil, 200))
@@ -142,42 +145,89 @@ func TestLocalGameDataSurvivesRestart(t *testing.T) {
 	additional := gameResponse[levels.Entry](t, request("POST", "levels", struct{}{}, 201))
 	assertOrder(legacy.ID, custom.ID, "manual", additional.ID)
 
-	// 用重启后的接口对比旧存档，覆盖计时和水平加速进度。
-	savedProgress := gameResponse[levels.Progress](t, request("GET", "progress", nil, 200))
-	if entry := savedProgress.Levels[builtin.ID]; savedProgress.RecentBuiltin != builtin.ID ||
-		entry.Run == nil || entry.Run.World.Player.X != 7.25 || *entry.Run.ElapsedMS != elapsed {
-		t.Fatalf("active built-in checkpoint not restored: %+v", savedProgress)
+	// 旧版通关汇总和最近关卡继续有效，快照从接口和文件中清除。
+	oldCompletedAt := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	migrated := gameResponse[levels.Progress](t, request("GET", "progress", nil, 200))
+	prior := migrated.Levels[builtin.ID]
+	if migrated.RecentLevel != builtin.ID || len(migrated.Levels) != 1 || !prior.CompletedAt.Equal(oldCompletedAt) ||
+		prior.BestDurationMS == nil || *prior.BestDurationMS != 4300 || len(prior.Completions) != 0 {
+		t.Fatalf("expected only the legacy summary and recent level: %+v", migrated)
 	}
-	if entry := savedProgress.Levels[custom.ID]; entry.Run == nil || entry.Run.World.MoveDistance == nil ||
-		*entry.Run.World.MoveDistance != moveDistance {
-		t.Fatalf("acceleration progress not restored: %+v", entry.Run)
-	}
-
-	// 在数次成绩更新之间重放旧存档，检查已清除的本局记录不会复活。
-	duration := int64(3600)
-	result := levels.ProgressUpdate{Revision: builtin.Revision, SavedAt: 12, Won: true, DurationMS: &duration}
-	first := gameResponse[levels.LevelProgress](t, request("PUT", "progress/"+builtin.ID, result, 200))
-	request("PUT", "progress/"+builtin.ID, update, 200)
-	longer := int64(5900)
-	result.SavedAt, result.DurationMS = 13, &longer
-	request("PUT", "progress/"+builtin.ID, result, 200)
-	faster := int64(2700)
-	result.SavedAt, result.DurationMS = 14, &faster
-	best := gameResponse[levels.LevelProgress](t, request("PUT", "progress/"+builtin.ID, result, 200))
-	if best.Run != nil || best.Completion == nil || *best.BestDurationMS != faster || !best.CompletedAt.Equal(first.CompletedAt) {
-		t.Fatalf("completion did not keep earliest time and fastest duration: %+v", best)
-	}
-	if _, err := os.Stat(filepath.Join(dir, "progress.json")); err != nil {
+	migratedFile, err := os.ReadFile(progressPath)
+	if err != nil {
 		t.Fatal(err)
 	}
+	for _, field := range []string{`"recentBuiltin"`, `"run"`, `"savedAt"`, `"elapsedMS"`} {
+		if strings.Contains(string(migratedFile), field) {
+			t.Fatalf("legacy field %s still on disk: %s", field, migratedFile)
+		}
+	}
 
-	// 改变物理规则后，以旧修订号写入应收到冲突响应。
+	// 后打开的自建关卡成为继续入口。原页面仍可提交成绩，互不覆盖。
+	request("PUT", "progress/recent/"+builtin.ID, nil, 204)
+	request("PUT", "progress/recent/"+custom.ID, nil, 204)
+	request("PUT", "progress/"+builtin.ID, json.RawMessage(`{"run":{"elapsedMS":2000}}`), 404)
+	progress := gameResponse[levels.Progress](t, request("GET", "progress", nil, 200))
+	if progress.RecentLevel != custom.ID || len(progress.Levels) != 1 {
+		t.Fatalf("entering a level must only change the recent level: %+v", progress)
+	}
+	resultPath := "progress/" + builtin.ID + "/completions/"
+	faster, slower := int64(2700), int64(5900)
+	firstID, secondID := fmt.Sprintf("%032x", 1), fmt.Sprintf("%032x", 2)
+	first := levels.CompletionUpdate{Revision: builtin.Revision, Model: "a/model", DurationMS: &faster}
+	second := levels.CompletionUpdate{Revision: builtin.Revision, Model: "b/model", DurationMS: &slower}
+	request("PUT", resultPath+"invalid", first, 400)
+
+	// 并发提交同一关的不同尝试及重复请求，确保每次通关只记一条。
+	replies := make(chan *httptest.ResponseRecorder, 3)
+	for _, attempt := range []struct {
+		id     string
+		result levels.CompletionUpdate
+	}{{firstID, first}, {secondID, second}, {firstID, first}} {
+		body, err := json.Marshal(attempt.result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		go func() { replies <- send(handler, "PUT", "/api/v1/"+resultPath+attempt.id, string(body)) }()
+	}
+	got := make(map[string]levels.Completion)
+	for range 3 {
+		reply := <-replies
+		if reply.Code != 200 {
+			t.Fatalf("completion returned %d: %s", reply.Code, reply.Body)
+		}
+		record := gameResponse[levels.Completion](t, reply)
+		if previous, ok := got[record.AttemptID]; ok && !previous.CompletedAt.Equal(record.CompletedAt) {
+			t.Fatalf("retry changed completion time: %+v", record)
+		}
+		got[record.AttemptID] = record
+	}
+
+	handler = start()
+	progress = gameResponse[levels.Progress](t, request("GET", "progress", nil, 200))
+	record := progress.Levels[builtin.ID]
+	if progress.RecentLevel != custom.ID || len(record.Completions) != 2 ||
+		record.BestDurationMS == nil || *record.BestDurationMS != faster || !record.CompletedAt.Equal(oldCompletedAt) {
+		t.Fatalf("expected both attempts, preserved summary and the latest entered level: %+v", progress)
+	}
+	expectedResults := map[string]levels.CompletionUpdate{firstID: first, secondID: second}
+	for _, completion := range record.Completions {
+		expected, exists := expectedResults[completion.AttemptID]
+		if !exists || completion.Model != expected.Model ||
+			completion.DurationMS == nil || *completion.DurationMS != *expected.DurationMS ||
+			completion.CompletedAt.IsZero() || !got[completion.AttemptID].CompletedAt.Equal(completion.CompletedAt) {
+			t.Fatalf("completion data did not survive restart: %+v", completion)
+		}
+	}
+
+	// 改变物理规则后，以旧修订号提交成绩应收到冲突响应。
 	custom.Level.Gravity = 2
 	changed := gameResponse[levels.Entry](t, request("PUT", levelPath, custom.Level, 200))
 	if changed.Revision == saved.Revision {
-		t.Fatal("physics edits must invalidate old checkpoints")
+		t.Fatal("physics edits must change the level revision")
 	}
-	request("PUT", "progress/"+custom.ID, levels.ProgressUpdate{Revision: saved.Revision, SavedAt: 15, Run: &run}, 409)
+	first.Revision = saved.Revision
+	request("PUT", "progress/"+custom.ID+"/completions/"+firstID, first, 409)
 }
 
 // gameResponse 将测试响应体解码为调用方指定的类型。

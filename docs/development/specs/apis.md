@@ -9,7 +9,8 @@
 - [游玩进度](#2-游玩进度)
   - [`GET /api/v1/progress` 获取游玩进度](#21-获取游玩进度)
   - [`POST /api/v1/progress` 迁移旧版游玩进度](#22-迁移旧版游玩进度)
-  - [`PUT /api/v1/progress/{id}` 更新单个关卡的进度](#23-更新单个关卡的进度)
+  - [`PUT /api/v1/progress/{id}/completions/{attemptID}` 记录一次通关](#23-记录一次通关)
+  - [`PUT /api/v1/progress/recent/{id}` 登记最近关卡](#24-登记最近关卡)
 - [设置](#3-设置)
   - [`GET /api/v1/settings` 获取设置](#31-获取设置)
   - [`POST /api/v1/settings` 更新设置](#32-更新设置)
@@ -156,79 +157,72 @@
 
 请求体
 
-- **recentBuiltin** (string, optional) 最近游玩的内置关卡 ID 。
-- **levels** (map\[string][Completion](#completion), optional) 以关卡 ID 为键，以关卡进度为值。仅合并内置关卡的记录。
+- **recentBuiltin** (string, optional) 旧版浏览器最近游玩的内置关卡 ID。
+- **levels** (map\[string][CompletionSummary](#completionsummary), optional) 以内置关卡 ID 为键的旧版通关汇总。
 
 响应
 
-- `200` 返回合并后的游玩进度。
+- `200` 返回合并后的 [Progress](#progress) 。
 - `400` 请求体格式无效。
 - `500` 读取或保存进度失败。
 
-正常响应体为 [Progress](#progress) 。
+### 2.3 记录一次通关
 
-### 2.3 更新单个关卡的进度
-
-请求 `PUT /api/v1/progress/{id}`
+请求 `PUT /api/v1/progress/{id}/completions/{attemptID}`
 
 路径参数
 
-- **id** (string) 关卡 ID 。
+- **id** (string) 关卡 ID。
+- **attemptID** (string) 本次尝试的 ID，使用 32 个小写十六进制字符。同一关卡下重复提交同一 ID 返回原记录。
 
 请求体
 
-- **revision** (string) 当前关卡版本标识。
-- **savedAt** (integer) 保存时间，正数 Unix 毫秒时间戳。
-- **run** ([Run](#run), optional) 当前关卡进度。传入 `null` 或省略表示清除存档。较旧的保存时间不会覆盖同版本下较新的存档。
-- **recent** (boolean, optional) 为 `true` 时，按保存时间更新最近游玩的内置关卡。
-- **won** (boolean, optional) 为 `true` 时记录通关，此时 **run** 必须为空。
-- **durationMS** (integer, optional) 本次通关用时，单位为毫秒。仅在 **won** 为 `true` 时可提交。
+- **revision** (string) 本次通关使用的关卡物理版本。
+- **model** (string, optional) 最后执行移动或跳跃动作的模型，格式为 `<providerID>/<modelID>` 。
+- **durationMS** (integer, optional) 从发出首条玩家指令到踩下按钮的毫秒数。无计时的通关省略。
 
 响应
 
-- `200` 返回更新后的进度。
+- `200` 返回 [Completion](#completion) 。
 - `400` 请求体无效或关卡不可游玩。
 - `404` 关卡不存在。
-- `409` 关卡版本已变更。
+- `409` 关卡物理版本已变更。
 - `500` 读取或保存进度失败。
 
-正常响应体为 [LevelProgress](#levelprogress) 。
+### 2.4 登记最近关卡
 
-### 2.4 公共结构
+请求 `PUT /api/v1/progress/recent/{id}` ，其中 **id** 为进入正式游玩的关卡 ID。请求无正文。同一服务上的多个页面共享最近关卡，按服务端处理登记请求的顺序更新。
+
+响应
+
+- `204` 已登记。
+- `400` 关卡不可游玩。
+- `404` 关卡不存在。
+- `500` 读取或保存进度失败。
+
+### 2.5 公共结构
 
 #### Progress
 
-- **recentBuiltin** (string, optional) 最近游玩的内置关卡 ID 。
-- **recentBuiltinAt** (integer, optional) 最近游玩的 Unix 毫秒时间戳。
-- **levels** (map\[string][LevelProgress](#levelprogress)) 以关卡 ID 为键，以单关卡进度为值。
+- **recentLevel** (string, optional) 最近进入的可玩关卡 ID，可为内置或自建关卡。
+- **levels** (map\[string][LevelProgress](#levelprogress)) 以关卡 ID 为键的通关记录。
 
 #### LevelProgress
 
-- **completedAt** (string, optional) 首次通关时间， RFC 3339 格式。
+包含 [CompletionSummary](#completionsummary) 的全部字段。
+
+- **completions** ([Completion](#completion)[], optional) 逐次通关记录，按服务保存顺序排列。
+
+#### CompletionSummary
+
+- **completedAt** (string) 首次通关时间，RFC 3339 格式。
 - **bestDurationMS** (integer, optional) 最短通关用时，单位为毫秒。
-- **revision** (string, optional) 保存时的关卡版本标识。
-- **savedAt** (integer, optional) 保存时间， Unix 毫秒时间戳。
-- **run** ([Run](#run), optional) 当前存档。
 
 #### Completion
 
-- **completedAt** (string) 首次通关时间， RFC 3339 格式。
-- **bestDurationMS** (integer, optional) 最短通关用时，单位为毫秒。
+包含路径中的 **attemptID** 和请求体中的 **revision**、**model**、**durationMS**。
 
-#### Run
-
-- **elapsedMS** (integer, optional) 已游玩时长，单位为毫秒。
-- **world** (object) 当前游戏状态。
-  - **player** (object) 玩家状态。
-    - **x** (number) 横坐标。
-    - **y** (number) 纵坐标。
-    - **facing** (integer) 朝向，左为 `-1`，右为 `1`。
-  - **velocityY** (number) 纵向速度。
-  - **canJump** (boolean) 是否可以跳跃。
-  - **previousDirection** (integer) 上次移动方向，左、无、右分别为 `-1`、`0`、`1`。
-  - **moveDistance** (number, optional) 移动距离。
-  - **slideDirection** (integer) 滑行方向，左、无、右分别为 `-1`、`0`、`1`。
-  - **slideRemaining** (number) 剩余滑行距离。
+- **completedAt** (string) 服务端记录本次通关的时间，RFC 3339 格式。
 
 ## 3 设置
 

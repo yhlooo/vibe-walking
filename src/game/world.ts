@@ -9,17 +9,6 @@ export type StepInput = { direction: Direction; jump: boolean; distance?: number
 export type Outcome = 'active' | 'won' | 'lost';
 /** 保存角色的位置和水平朝向。 */
 export type Player = Point & { facing: -1 | 1 };
-/** 保存可持久化的物理状态，含跳跃及惯性进度。 */
-export type WorldState = {
-  player: Player;
-  velocityY: number;
-  canJump: boolean;
-  previousDirection: Direction;
-  // 记录本次同向移动已积累的加速距离。
-  moveDistance?: number;
-  slideDirection: Direction;
-  slideRemaining: number;
-};
 /** 提供渲染所需的关卡、角色与结局。 */
 export type Snapshot = { level: LevelDefinition; player: Player; outcome: Outcome };
 
@@ -68,32 +57,18 @@ export class World {
   private slideRemaining = 0;
   outcome: Outcome = 'active';
 
-  // 收集固体格及按钮，并按需从兼容存档恢复。
-  constructor(level: LevelDefinition, saved?: WorldState) {
+  // 收集固体格和按钮，并把玩家放在出生点。
+  constructor(level: LevelDefinition) {
     this.level = level;
     this.button = findButton(level);
     this.size = gridSize(level.tiles);
-    this.player = saved ? { ...saved.player } : { ...level.spawn, facing: 1 };
-    if (saved) {
-      this.velocityY = saved.velocityY;
-      this.canJump = saved.canJump;
-      this.previousDirection = saved.previousDirection;
-
-      // 旧存档中仍在移动的角色按已达匀速恢复，静止时从零开始加速。
-      this.moveDistance = saved.moveDistance ?? Math.abs(saved.previousDirection);
-      this.slideDirection = saved.slideDirection;
-      this.slideRemaining = saved.slideRemaining;
-    }
+    this.player = { ...level.spawn, facing: 1 };
     this.solids = level.tiles.flatMap((row, y) => Array.from(row).flatMap((tile, x) => tile === '#' ? [{ x, y }] : []));
   }
 
-  // 导出恢复当前模拟所需的数据。
-  save(): WorldState {
-    return {
-      player: { ...this.player }, velocityY: this.velocityY, canJump: this.canJump,
-      previousDirection: this.previousDirection, moveDistance: this.moveDistance,
-      slideDirection: this.slideDirection, slideRemaining: this.slideRemaining,
-    };
+  // 返回当前跳跃与滑行状态，供物理规则测试检查。
+  motionState() {
+    return { canJump: this.canJump, slideRemaining: this.slideRemaining };
   }
 
   // 返回供场景绘制使用的角色快照。

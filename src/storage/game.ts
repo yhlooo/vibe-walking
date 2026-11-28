@@ -1,8 +1,7 @@
-import type { WorldState } from '../game/world.ts';
 import { isRecord, readLevel } from '../level/definition.ts';
 import type { LevelDefinition } from '../level/definition.ts';
 
-/** 描述关卡目录条目及其存档修订号。 */
+/** 描述关卡目录条目及其物理修订号。 */
 export type LevelEntry = {
   id: string;
   kind: 'builtin' | 'custom';
@@ -11,26 +10,27 @@ export type LevelEntry = {
   level: LevelDefinition;
 };
 
-/** 保存可恢复的物理状态及当前用时。 */
-export type SavedRun = { world: WorldState; elapsedMS?: number };
-/** 描述通关时间及可用的最快成绩。 */
-export type Completion = { completedAt: string; bestDurationMS?: number };
-/** 合并单个关卡的成绩、修订号和当前存档。 */
-export type LevelProgress = Partial<Completion> & { revision?: string; savedAt?: number; run?: SavedRun };
-/** 描述本地服务保存的关卡进度集合。 */
-export type Progress = { recentBuiltin?: string; recentBuiltinAt?: number; levels: Record<string, LevelProgress> };
-/** 携带一次客户端存档或通关更新。 */
-export type ProgressUpdate = { revision: string; savedAt: number; run: SavedRun | null; recent?: boolean; won?: boolean; durationMS?: number };
+/** 描述用于关卡卡片的首次通关时间和最快用时。 */
+type CompletionSummary = { completedAt: string; bestDurationMS?: number };
+/** 携带一次通关的尝试 ID、关卡版本及模型成绩。 */
+export type CompletionUpdate = { attemptID: string; revision: string; model?: string; durationMS?: number };
+/** 记录一次由服务确认的通关。 */
+export type Completion = CompletionUpdate & { completedAt: string };
+/** 保存单个关卡的汇总与逐次通关记录。 */
+export type LevelProgress = CompletionSummary & { completions?: Completion[] };
+/** 描述服务保存的通关记录及最近进入的关卡。 */
+export type Progress = { recentLevel?: string; levels: Record<string, LevelProgress> };
 
 // 发送本地关卡 API 请求并解码成功或错误响应。
 async function request<T>(path: string, method = 'GET', data?: unknown): Promise<T> {
   const response = await fetch('/api/v1/' + path, {
     method, cache: 'no-store', signal: AbortSignal.timeout(10000),
+    keepalive: method !== 'GET',
     ...(data === undefined ? {} : {
-      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data), keepalive: true,
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data),
     }),
   });
-  const value = await response.json();
+  const value = response.status === 204 ? undefined : await response.json();
   if (!response.ok) throw new Error(value?.error?.message ?? '无法读取或保存本地游戏数据');
   return value as T;
 }
@@ -60,9 +60,14 @@ export function updateLevel(id: string, level: LevelDefinition) {
   return request<LevelEntry>(`levels/${encodeURIComponent(id)}`, 'PUT', level);
 }
 
-/** 提交指定关卡的新存档或通关成绩。 */
-export function updateProgress(id: string, update: ProgressUpdate) {
-  return request<LevelProgress>(`progress/${encodeURIComponent(id)}`, 'PUT', update);
+/** 标记本次进入的正式游玩关卡。 */
+export function markRecentLevel(id: string) {
+  return request<void>(`progress/recent/${encodeURIComponent(id)}`, 'PUT');
+}
+
+/** 提交指定关卡的一次通关。 */
+export function recordCompletion(id: string, { attemptID, ...update }: CompletionUpdate) {
+  return request<Completion>(`progress/${encodeURIComponent(id)}/completions/${encodeURIComponent(attemptID)}`, 'PUT', update);
 }
 
 // 标识旧版浏览器中待迁移的草稿和进度数据。
@@ -119,7 +124,7 @@ export async function migrateProgress() {
   }
 
   // 旧进度逐条筛选有效日期和成绩，再交给服务合并。
-  const levels: [string, Completion][] = [];
+  const levels: [string, CompletionSummary][] = [];
   if (isRecord(previous)) {
     for (const [id, entry] of Object.entries(previous)) {
       if (!isRecord(entry) || typeof entry.completedAt !== 'string') continue;

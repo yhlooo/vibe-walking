@@ -6,6 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/yhlooo/vibe-walking/internal/jsonfile"
@@ -14,97 +16,103 @@ import (
 // ErrInvalidProgress 表示提交的记录不符合游玩进度格式。
 var ErrInvalidProgress = errors.New("游玩进度格式无效")
 
-// ErrLevelChanged 表示存档所基于的关卡修订号已过期。
+// ErrLevelChanged 表示提交成绩所用的关卡修订号已过期。
 var ErrLevelChanged = errors.New("关卡已修改，请重新进入关卡")
 
-// Completion 记录通关时间和已知的最短用时。
+const progressVersion = 2
+
+var attemptIDPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// Completion 记录一次通关的模型、时间和用时。
 type Completion struct {
+	AttemptID   string    `json:"attemptID"`
+	Revision    string    `json:"revision"`
+	Model       string    `json:"model,omitempty"`
+	CompletedAt time.Time `json:"completedAt"`
+	DurationMS  *int64    `json:"durationMS,omitempty"`
+}
+
+// CompletionSummary 保存关卡的首次通关时间和最快成绩，也用于兼容旧版汇总。
+type CompletionSummary struct {
 	CompletedAt    time.Time `json:"completedAt"`
 	BestDurationMS *int64    `json:"bestDurationMS,omitempty"`
 }
 
-// WorldState 保存恢复游玩所需的玩家位置、跳跃和水平移动状态。
-type WorldState struct {
-	Player struct {
-		X      float64 `json:"x"`
-		Y      float64 `json:"y"`
-		Facing int     `json:"facing"`
-	} `json:"player"`
-	VelocityY         float64 `json:"velocityY"`
-	CanJump           bool    `json:"canJump"`
-	PreviousDirection int     `json:"previousDirection"`
-	// 记录当前方向上的加速距离，旧存档可以省略。
-	MoveDistance   *float64 `json:"moveDistance,omitempty"`
-	SlideDirection int      `json:"slideDirection"`
-	SlideRemaining float64  `json:"slideRemaining"`
-}
-
-// Run 是可继续的一局的存档。
-type Run struct {
-	World     WorldState `json:"world"`
-	ElapsedMS *int64     `json:"elapsedMS,omitempty"`
-}
-
-// LevelProgress 记录一个关卡的通关成绩和当前存档。
+// LevelProgress 保存关卡的成绩汇总及逐次通关记录。
 type LevelProgress struct {
-	*Completion
-	// 标记当前存档所对应的关卡物理定义。
-	Revision string `json:"revision,omitempty"`
-	Run      *Run   `json:"run,omitempty"`
-	// 用于比较客户端提交的存档先后。
-	SavedAt int64 `json:"savedAt,omitempty"`
+	CompletionSummary
+	Completions []Completion `json:"completions,omitempty"`
 }
 
-// Progress 汇总关卡进度和最近游玩的内置关卡。
+// Progress 汇总通关记录和首页继续入口所用的最近关卡 ID。
 type Progress struct {
-	RecentBuiltin   string                   `json:"recentBuiltin,omitempty"`
-	RecentBuiltinAt int64                    `json:"recentBuiltinAt,omitempty"`
-	Levels          map[string]LevelProgress `json:"levels"`
+	RecentLevel string                   `json:"recentLevel,omitempty"`
+	Levels      map[string]LevelProgress `json:"levels"`
 }
 
-// ProgressUpdate 描述客户端提交的一次存档或成绩更新。
-type ProgressUpdate struct {
-	Revision string `json:"revision"`
-	SavedAt  int64  `json:"savedAt"`
-	Recent   bool   `json:"recent,omitempty"`
-	// 空值表示清除当前存档。
-	Run        *Run   `json:"run"`
-	Won        bool   `json:"won,omitempty"`
+// CompletionUpdate 描述客户端提交的一次通关。
+type CompletionUpdate struct {
+	Revision   string `json:"revision"`
+	Model      string `json:"model,omitempty"`
 	DurationMS *int64 `json:"durationMS,omitempty"`
 }
 
-// LegacyProgress 是从浏览器旧存储导入的通关记录。
+// LegacyProgress 是从浏览器旧存储导入的关卡及成绩汇总。
 type LegacyProgress struct {
-	RecentBuiltin string                `json:"recentBuiltin"`
-	Levels        map[string]Completion `json:"levels"`
+	RecentBuiltin string                       `json:"recentBuiltin"`
+	Levels        map[string]CompletionSummary `json:"levels"`
 }
 
-// ReadProgress 在锁保护下读取持久化进度。
-func (s *Store) ReadProgress() (Progress, error) {
+// ReadProgress 读取持久化进度，首次打开旧文件时移除已废弃的尝试快照。
+func (s *Store) ReadProgress(ctx context.Context) (Progress, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.readProgress()
+
+	progress, upgrade, err := s.readProgress()
+	if err == nil && upgrade {
+		err = s.writeProgress(ctx, progress)
+	}
+	return progress, err
 }
 
-// readProgress 读取进度文件，并为新安装初始化空记录。
-func (s *Store) readProgress() (Progress, error) {
+// readProgress 读取进度文件，解码时只选取旧文件中仍使用的字段。
+func (s *Store) readProgress() (Progress, bool, error) {
 	progress := Progress{Levels: make(map[string]LevelProgress)}
 	raw, err := os.ReadFile(s.progressPath())
 	if errors.Is(err, os.ErrNotExist) {
-		return progress, nil
+		return progress, false, nil
 	}
 	if err != nil {
-		return Progress{}, err
-	}
-	if err := json.Unmarshal(raw, &progress); err != nil {
-		return Progress{}, err
+		return Progress{}, false, err
 	}
 
-	// 旧文件可能省略关卡记录，为后续合并准备可写的映射。
-	if progress.Levels == nil {
-		progress.Levels = make(map[string]LevelProgress)
+	file := struct {
+		Progress
+		Version       int    `json:"version"`
+		RecentBuiltin string `json:"recentBuiltin"`
+	}{Progress: progress}
+	if err := json.Unmarshal(raw, &file); err != nil {
+		return Progress{}, false, err
 	}
-	return progress, nil
+	if file.Version != 0 && file.Version != progressVersion {
+		return Progress{}, false, errors.New("不支持的游玩进度版本")
+	}
+
+	if file.Levels == nil {
+		file.Levels = make(map[string]LevelProgress)
+	}
+	upgrade := file.Version == 0
+	if upgrade {
+		if file.RecentLevel == "" {
+			file.RecentLevel = file.RecentBuiltin
+		}
+		for id, entry := range file.Levels {
+			if entry.CompletedAt.IsZero() {
+				delete(file.Levels, id)
+			}
+		}
+	}
+	return file.Progress, upgrade, nil
 }
 
 // progressPath 返回进度文件在数据目录中的路径。
@@ -112,64 +120,87 @@ func (s *Store) progressPath() string {
 	return filepath.Join(s.dir, "progress.json")
 }
 
-// mergeCompletion 合并通关时间并保留已知的最短用时。
-func mergeCompletion(previous *Completion, next Completion) *Completion {
-	if previous == nil {
-		return &next
-	}
-
-	// 将最早通关时间和最快用时分别比较，两者可能来自不同场游玩。
-	best := *previous
-	if next.CompletedAt.Before(best.CompletedAt) {
-		best.CompletedAt = next.CompletedAt
-	}
-	if next.BestDurationMS != nil && (best.BestDurationMS == nil || *next.BestDurationMS < *best.BestDurationMS) {
-		best.BestDurationMS = next.BestDurationMS
-	}
-	return &best
+// writeProgress 原子替换当前版本的进度文件。
+func (s *Store) writeProgress(ctx context.Context, progress Progress) error {
+	return jsonfile.Write(ctx, s.progressPath(), struct {
+		Version int `json:"version"`
+		Progress
+	}{Version: progressVersion, Progress: progress})
 }
 
-// UpdateProgress 校验关卡修订号并合并客户端进度。
-func (s *Store) UpdateProgress(ctx context.Context, id string, update ProgressUpdate) (LevelProgress, error) {
+// SetRecentLevel 按服务处理顺序更新最近进入的正式游玩关卡。
+func (s *Store) SetRecentLevel(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	entry, err := s.get(id)
 	if err != nil {
-		return LevelProgress{}, err
+		return err
 	}
-
-	// 先核对物理版本，避免旧地图的位置进入新地图的存档。
-	if update.Revision != entry.Revision {
-		return LevelProgress{}, ErrLevelChanged
+	if !entry.Level.Playable() {
+		return ErrInvalidProgress
 	}
-	if update.SavedAt <= 0 || !entry.Level.Playable() || !validDuration(update.DurationMS) ||
-		(update.Run != nil && (update.Won || !validRun(entry.Level, *update.Run))) ||
-		(!update.Won && update.DurationMS != nil) {
-		return LevelProgress{}, ErrInvalidProgress
-	}
-
-	progress, err := s.readProgress()
+	progress, upgrade, err := s.readProgress()
 	if err != nil {
-		return LevelProgress{}, err
+		return err
+	}
+	if progress.RecentLevel == id && !upgrade {
+		return nil
+	}
+	progress.RecentLevel = id
+	return s.writeProgress(ctx, progress)
+}
+
+// RecordCompletion 校验关卡修订号并追加一次通关，重复提交同一尝试时返回已有记录。
+func (s *Store) RecordCompletion(ctx context.Context, id, attemptID string, update CompletionUpdate) (Completion, error) {
+	if !attemptIDPattern.MatchString(attemptID) || !validDuration(update.DurationMS) ||
+		(update.Model != "" && strings.TrimSpace(update.Model) != update.Model) {
+		return Completion{}, ErrInvalidProgress
 	}
 
-	// 用修订号和时间戳保护较新的存档，通关成绩独立合并。
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry, err := s.get(id)
+	if err != nil {
+		return Completion{}, err
+	}
+	progress, _, err := s.readProgress()
+	if err != nil {
+		return Completion{}, err
+	}
+
 	current := progress.Levels[id]
-	if current.Revision != entry.Revision || update.SavedAt >= current.SavedAt {
-		current.Revision, current.Run, current.SavedAt = entry.Revision, update.Run, update.SavedAt
+	for _, completion := range current.Completions {
+		if completion.AttemptID == attemptID {
+			return completion, nil
+		}
 	}
-	if update.Won {
-		current.Completion = mergeCompletion(current.Completion, Completion{CompletedAt: time.Now().UTC(), BestDurationMS: update.DurationMS})
+	if update.Revision != entry.Revision {
+		return Completion{}, ErrLevelChanged
+	}
+	if !entry.Level.Playable() {
+		return Completion{}, ErrInvalidProgress
 	}
 
-	// 首页继续入口只记录内置关卡，并以时间戳筛选最新一次访问。
-	if update.Recent && entry.Kind == "builtin" && update.SavedAt >= progress.RecentBuiltinAt {
-		progress.RecentBuiltin, progress.RecentBuiltinAt = id, update.SavedAt
+	completion := Completion{
+		AttemptID: attemptID, Revision: update.Revision, Model: update.Model,
+		CompletedAt: time.Now().UTC(), DurationMS: update.DurationMS,
 	}
-
+	current.Completions = append(current.Completions, completion)
+	current.mergeSummary(CompletionSummary{CompletedAt: completion.CompletedAt, BestDurationMS: completion.DurationMS})
 	progress.Levels[id] = current
-	return current, jsonfile.Write(ctx, s.progressPath(), progress)
+	return completion, s.writeProgress(ctx, progress)
+}
+
+// mergeSummary 保留最早通关时间及最短已知用时。
+func (p *LevelProgress) mergeSummary(next CompletionSummary) {
+	if p.CompletedAt.IsZero() || next.CompletedAt.Before(p.CompletedAt) {
+		p.CompletedAt = next.CompletedAt
+	}
+	if next.BestDurationMS != nil && (p.BestDurationMS == nil || *next.BestDurationMS < *p.BestDurationMS) {
+		p.BestDurationMS = next.BestDurationMS
+	}
 }
 
 // validDuration 接受未提供或处于 JavaScript 安全整数范围内的非负时长。
@@ -177,37 +208,26 @@ func validDuration(value *int64) bool {
 	return value == nil || (*value >= 0 && *value <= 1<<53-1)
 }
 
-// validRun 校验存档中的数值和角色位置。
-func validRun(level Definition, run Run) bool {
-	w := run.World
-	direction := func(value int) bool { return value >= -1 && value <= 1 }
-	return validDuration(run.ElapsedMS) && w.Player.X >= 0 && w.Player.X <= float64(len(level.Tiles[0])-1) &&
-		w.Player.Y >= 0 && w.Player.Y < float64(len(level.Tiles)) && (w.Player.Facing == -1 || w.Player.Facing == 1) &&
-		w.VelocityY >= -20 && w.VelocityY <= 20 && direction(w.PreviousDirection) && direction(w.SlideDirection) &&
-		(w.MoveDistance == nil || (*w.MoveDistance >= 0 && *w.MoveDistance <= 1)) &&
-		w.SlideRemaining >= 0 && w.SlideRemaining <= 10
-}
-
 // MigrateProgress 将浏览器旧记录合并到当前进度。
 func (s *Store) MigrateProgress(ctx context.Context, old LegacyProgress) (Progress, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	progress, err := s.readProgress()
+	progress, _, err := s.readProgress()
 	if err != nil {
 		return Progress{}, err
 	}
 
 	// 浏览器旧版进度只迁移已知内置关卡，已有最近记录优先保留。
 	for _, entry := range s.builtIns {
-		if old.RecentBuiltin == entry.ID && progress.RecentBuiltin == "" {
-			progress.RecentBuiltin = entry.ID
+		if old.RecentBuiltin == entry.ID && progress.RecentLevel == "" {
+			progress.RecentLevel = entry.ID
 		}
 		if item, ok := old.Levels[entry.ID]; ok && !item.CompletedAt.IsZero() && validDuration(item.BestDurationMS) {
 			current := progress.Levels[entry.ID]
-			current.Completion = mergeCompletion(current.Completion, item)
+			current.mergeSummary(item)
 			progress.Levels[entry.ID] = current
 		}
 	}
-	return progress, jsonfile.Write(ctx, s.progressPath(), progress)
+	return progress, s.writeProgress(ctx, progress)
 }

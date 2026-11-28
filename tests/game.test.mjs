@@ -171,20 +171,16 @@ test('a downward jump from right support continues until the next support restor
   const { x } = world.snapshot().player;
   near(x, 5 - 0.0004);
   near(world.snapshot().player.y, 4 + Math.sqrt(48) / 100);
-  const restored = new World(level, JSON.parse(JSON.stringify(world.save())));
-  for (const state of [world, restored]) {
-    assert.equal(state.save().canJump, false);
-    state.step(jump);
-    near(state.snapshot().player.x, x);
-    near(state.snapshot().player.y, 4 + 2 * Math.sqrt(48) / 100);
-    repeat(state, idleInput, 50);
-    near(state.snapshot().player.y, 6);
-    assert.equal(state.save().canJump, true);
-    state.step(jump);
-    near(state.snapshot().player.x, x);
-    near(state.snapshot().player.y, 6 - Math.sqrt(48) / 100);
-  }
-  assert.deepEqual(restored.save(), world.save());
+  assert.equal(world.motionState().canJump, false);
+  world.step(jump);
+  near(world.snapshot().player.x, x);
+  near(world.snapshot().player.y, 4 + 2 * Math.sqrt(48) / 100);
+  repeat(world, idleInput, 50);
+  near(world.snapshot().player.y, 6);
+  assert.equal(world.motionState().canJump, true);
+  world.step(jump);
+  near(world.snapshot().player.x, x);
+  near(world.snapshot().player.y, 6 - Math.sqrt(48) / 100);
 });
 
 // 覆盖无支撑出生和离开平台后的单次向上跳跃。
@@ -196,13 +192,13 @@ test('zero gravity allows one upward jump after spawning unsupported or moving o
     near(world.snapshot().player.y, 4);
     world.step(jump);
     near(world.snapshot().player.y, 4 - Math.sqrt(48) / 100);
-    assert.equal(world.save().canJump, false);
+    assert.equal(world.motionState().canJump, false);
     repeat(world, idleInput, 60);
     near(world.snapshot().player.y, 0);
-    assert.equal(world.save().canJump, true);
+    assert.equal(world.motionState().canJump, true);
     world.step(jump);
     near(world.snapshot().player.y, Math.sqrt(48) / 100);
-    assert.equal(world.save().canJump, false);
+    assert.equal(world.motionState().canJump, false);
   }
 });
 
@@ -314,7 +310,7 @@ test('slide distance scales with short moves and slide speed decays to zero', ()
   assert.ok(x(world) - 7.2 - initial < initial);
   repeat(world, idleInput, 150);
   near(x(world), 8.2);
-  assert.equal(world.save().slideRemaining, 0);
+  assert.equal(world.motionState().slideRemaining, 0);
 
   const split = new World(inertiaLevel);
   runActions(split, moveRight(0.07), moveRight(0.13), sleep(2));
@@ -336,7 +332,7 @@ test('reverse commands cancel the remaining slide before moving in the opposite 
   const partial = new World(inertiaLevel);
   runActions(partial, moveRight(2), moveLeft(3));
   near(x(partial), 9);
-  near(partial.save().slideRemaining, 2);
+  near(partial.motionState().slideRemaining, 2);
   repeat(partial, idleInput, 1);
   const speed = 4 * Math.sqrt(2 / 5);
   near(x(partial), 9 + speed * 0.01 - 0.8 * 0.01 ** 2);
@@ -355,9 +351,9 @@ test('commands can cancel a slide after waiting and reverse away from a wall', (
   const waited = new World(inertiaLevel);
   runActions(waited, moveRight(2), sleep(0.5));
   near(x(waited), 10.8);
-  near(waited.save().slideRemaining, 3.2);
+  near(waited.motionState().slideRemaining, 3.2);
   runActions(waited, moveLeft(1.2));
-  near(waited.save().slideRemaining, 2);
+  near(waited.motionState().slideRemaining, 2);
   runActions(waited, moveLeft(2), sleep(3));
   near(x(waited), 10.8);
 
@@ -368,39 +364,18 @@ test('commands can cancel a slide after waiting and reverse away from a wall', (
   near(x(wall), 7);
 });
 
-// 比较连续模拟与同一地图上恢复存档后的模拟。
-test('restoring a checkpoint resumes position, jump and inertia on an identical map', () => {
-  const world = new World(firstLevel);
-  repeat(world, right, 10);
-  world.step({ ...right, jump: true });
-  const accelerating = new World(firstLevel, JSON.parse(JSON.stringify(world.save())));
-  world.step(right);
-  accelerating.step(right);
-  assert.deepEqual(accelerating.save(), world.save());
-  repeat(world, idleInput, 3);
+// 同一关卡的不同尝试各自从出生点开始并独立推进。
+test('a new attempt starts at spawn and does not change the existing attempt', () => {
+  const first = new World(firstLevel);
+  repeat(first, right, 40);
+  const position = first.snapshot().player;
+  assert.ok(position.x > firstLevel.spawn.x);
 
-  // 通过 JSON 往返模拟磁盘存档，再比较恢复前后的下一步物理结果。
-  const restored = new World(firstLevel, JSON.parse(JSON.stringify(world.save())));
-  for (let i = 0; i < 80; i++) {
-    const input = i < 10 ? right : idleInput;
-    assert.equal(restored.step(input), world.step(input));
-    assert.deepEqual(restored.save(), world.save());
-  }
-});
-
-// 覆盖旧存档缺少加速距离时的兼容恢复。
-test('legacy checkpoints retain an active slide or a full-speed run', () => {
-  const world = new World(inertiaLevel);
-  repeat(world, right, 25);
-  const { moveDistance, ...legacy } = world.save();
-  const running = new World(inertiaLevel, legacy);
-  running.step(right);
-  near(x(running), 7.29);
-  runActions(running, sleep(0.5));
-  const { moveDistance: _, ...legacySlide } = running.save();
-  const sliding = new World(inertiaLevel, legacySlide);
-  runActions(sliding, moveLeft(3.2), sleep(3));
-  near(x(sliding), 9.09);
+  const next = new World(firstLevel);
+  assert.deepEqual(next.snapshot().player, { ...firstLevel.spawn, facing: 1 });
+  assert.deepEqual(next.motionState(), { canJump: true, slideRemaining: 0 });
+  next.step({ ...idleInput, jump: true });
+  assert.deepEqual(first.snapshot().player, position);
 });
 
 // 验证暂停期间不消耗动作队列的物理时间。
@@ -413,9 +388,13 @@ test('pausing freezes an in-flight action and resumes it without elapsed time', 
   globalThis.cancelAnimationFrame = () => {};
   const runtime = new Runtime(firstLevel, false, () => {}, () => {});
   try {
-    const movement = runtime.execute(compileActions({ actions: [moveRight(0.08), moveLeft(0.04)] }));
+    let controls = 0;
+    const movement = runtime.execute(compileActions({ actions: [moveRight(0.08), moveLeft(0.04)] }),
+      undefined, () => { controls++; });
     frame(0);
+    assert.equal(controls, 0);
     frame(10);
+    assert.equal(controls, 1);
     near(x(runtime.world), 2.0004);
 
     // 分别给暂停和恢复首帧注入长间隔，检查它们都不会被积进世界时钟。
@@ -427,6 +406,7 @@ test('pausing freezes an in-flight action and resumes it without elapsed time', 
     near(x(runtime.world), 2.0004);
     for (let step = 1; step <= 15; step++) frame(20000 + step * 10);
     await movement;
+    assert.equal(controls, 1);
     near(x(runtime.world), 2.08);
   } finally {
     runtime.dispose();

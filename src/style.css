@@ -257,6 +257,10 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .level-caption p { margin-top: 6px; font-size: 13px; color: #d5c7e2; }
 .level-caption .level-best { margin-top: 10px; font-weight: 650; }
 .level-caption time { display: block; margin-top: 8px; }
+.level-history { border-top: 1px solid #514466; padding: 10px 14px; font-size: 13px; }
+.level-history summary { cursor: pointer; }
+.level-history ul { margin: 8px 0 0; padding-left: 18px; overflow-wrap: anywhere; color: var(--muted); }
+.level-history li + li { margin-top: 5px; }
 
 /* 设置页面和可输入的模型下拉框。 */
 .settings-scene { width: min(100%, 540px); }

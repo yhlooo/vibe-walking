@@ -129,7 +129,8 @@ func newHandler(dataDir string, localOnly bool, logger logr.Logger) (http.Handle
 	mux.Handle("/api/v1/levels", guard.Handler(http.HandlerFunc(s.handleLevels)))
 	mux.Handle("/api/v1/levels/{id}", guard.Handler(http.HandlerFunc(s.handleLevel)))
 	mux.Handle("/api/v1/progress", guard.Handler(http.HandlerFunc(s.handleProgress)))
-	mux.Handle("/api/v1/progress/{id}", guard.Handler(http.HandlerFunc(s.handleLevelProgress)))
+	mux.Handle("/api/v1/progress/{id}/completions/{attemptID}", guard.Handler(http.HandlerFunc(s.handleCompletion)))
+	mux.Handle("/api/v1/progress/recent/{id}", guard.Handler(http.HandlerFunc(s.handleRecentLevel)))
 	mux.Handle("GET /llm/providers", guard.Handler(http.HandlerFunc(s.handleProviders)))
 	mux.Handle("GET /llm/providers/{providerID}/models", guard.Handler(http.HandlerFunc(s.handleProviderModels)))
 	for _, proxy := range modelProxies {

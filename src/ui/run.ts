@@ -7,7 +7,7 @@ import { Runtime } from '../game/runtime.ts';
 import type { Outcome, Snapshot } from '../game/world.ts';
 import type { LevelDefinition } from '../level/definition.ts';
 import { captureScene, drawScene } from '../render/scene.ts';
-import type { ProgressUpdate, SavedRun } from '../storage/game.ts';
+import type { CompletionUpdate } from '../storage/game.ts';
 import { element, formatDuration } from './elements.ts';
 import { modelPicker } from './model-picker.ts';
 
@@ -22,8 +22,8 @@ type RunOptions = {
   conversation: Conversation;
   debug?: boolean;
   completedAt?: string;
-  savedRun?: SavedRun;
-  onProgress?: (patch: Omit<ProgressUpdate, 'savedAt' | 'revision'>) => Promise<void>;
+  onEnter?: () => Promise<void>;
+  onCompletion?: (completion: Omit<CompletionUpdate, 'revision'>) => Promise<unknown>;
   nextLevel?: string;
   openSettings: () => void;
   editor?: {
@@ -31,7 +31,7 @@ type RunOptions = {
   };
 };
 
-/** 挂载游玩画面、聊天和存档生命周期。 */
+/** 挂载游玩画面、聊天和结算。 */
 export function mountRun(root: HTMLElement, options: RunOptions) {
   const { editor, conversation } = options;
   root.innerHTML = `
@@ -83,7 +83,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       </section>
       ${options.debug && !editor ? '<div class="run-debug" role="region" aria-label="模型调用统计" tabindex="0" data-run-debug></div>' : ''}
     </div>
-    ${options.onProgress ? `
+    ${options.onCompletion ? `
       <dialog class="level-result" aria-labelledby="result-title" data-level-result>
         <h2 id="result-title">通关成功</h2>
         <p class="muted" data-result-duration></p>
@@ -159,9 +159,9 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   let agent: Agent | undefined;
   let lastRecord = 0;
 
-  // 从第一条玩家指示起计时，恢复时接续旧存档用时。
-  let firstPromptAt = options.savedRun?.elapsedMS === undefined ? undefined : performance.now() - options.savedRun.elapsedMS;
-  let lastSavedWorld = '';
+  // 本局计时和最近一次有效动作的模型随场景创建及重置。
+  let firstPromptAt: number | undefined;
+  let actionModel: string | undefined;
   let saveError = '';
   let saveNumber = 0;
   title.textContent = level.name;
@@ -238,12 +238,10 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     return firstPromptAt === undefined ? undefined : Math.round(performance.now() - firstPromptAt);
   }
 
-  // 提交进度补丁，并只展示最新请求的错误状态。
-  function saveProgress(patch: Omit<ProgressUpdate, 'savedAt' | 'revision'>) {
-    if (!options.onProgress) return;
+  // 在场景和结算弹窗中展示最新一次保存的结果。
+  function watchSave(pending: Promise<unknown>, failure: string) {
     const number = ++saveNumber;
 
-    // 同步场景和结算弹窗中的保存提示。
     function showError(message: string) {
       if (signal.aborted || number !== saveNumber || saveError === message) return;
       saveError = message;
@@ -254,35 +252,17 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
         error.textContent = message;
       }
     }
-    void options.onProgress(patch).then(() => showError(''), () => {
-      // 保存失败时丢弃用于去重的快照，允许后续定时存档重试。
-      lastSavedWorld = '';
-      showError('无法保存游玩进度');
-    });
+
+    void pending.then(() => showError(''), () => showError(failure));
   }
 
-  // 保存未结束关卡的物理状态，跳过无变化的定时存档。
-  function checkpoint(force = false, recent = false) {
-    if (!options.onProgress || runtime.world.outcome !== 'active') return;
-    const world = runtime.world.save();
-
-    // 通过序列化物理状态识别重复存档，强制保存可以更新本局计时。
-    const serialized = JSON.stringify(world);
-    if (!force && serialized === lastSavedWorld) return;
-    lastSavedWorld = serialized;
-    saveProgress({ run: { world, elapsedMS: elapsedTime() }, recent });
-  }
-
-  // 在坠落或通关后处理存档和界面反馈。
+  // 处理坠落反馈和通关结算。
   function ended(outcome: Outcome) {
     const durationMS = outcome === 'won' ? elapsedTime() : undefined;
     refreshStage();
     if (outcome === 'lost') {
       stopAgent();
       retryRun.focus({ preventScroll: true });
-
-      // 坠落结局不能继续，清除本局存档。
-      saveProgress({ run: null });
     } else if (outcome === 'won' && result) {
       resultPending = true;
       doneBadge.hidden = false;
@@ -291,8 +271,12 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       time.hidden = durationMS === undefined;
       if (durationMS !== undefined) time.textContent = `通关耗时 · ${formatDuration(durationMS)}`;
 
-      // 通关成绩单独保存，同时移除已经结束的一局。
-      saveProgress({ run: null, won: true, durationMS });
+      // 为本次通关生成独立的尝试 ID，允许服务端识别重复提交。
+      const attemptID = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) =>
+        byte.toString(16).padStart(2, '0')).join('');
+      if (options.onCompletion) {
+        watchSave(options.onCompletion({ attemptID, model: actionModel, durationMS }), '无法保存通关记录');
+      }
       void requestVictoryReply();
     }
     refreshRecording();
@@ -372,11 +356,14 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     stopAgent();
     const outcome = runtime.world.outcome;
     if (!model || !username || (outcome !== 'active' && !(outcome === 'won' && result))) return;
-    agent = new Agent(model, defaultPrompt, {
+    const agentModel = model;
+    agent = new Agent(agentModel, defaultPrompt, {
       whenActive: (requestSignal) => runtime.whenActive(requestSignal),
       isReadScreenDisabled: () => level.disableReadScreen ?? false,
       readScreen: (disabled) => captureScene(runtime.world.snapshot(), disabled),
-      execute: (steps, requestSignal) => runtime.execute(steps, requestSignal),
+      execute: (steps, requestSignal) => runtime.execute(steps, requestSignal, () => {
+        actionModel = agentModel.model;
+      }),
       outcome: () => runtime.world.outcome,
     }, (event) => {
       appendEvent(messages, event, entries, username);
@@ -397,13 +384,13 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     window.clearTimeout(resultTimer);
     resultTimer = undefined;
     firstPromptAt = undefined;
+    actionModel = undefined;
     runtime.reset(level, manual);
     replaceAgent();
     draw(runtime.world.snapshot());
     refreshStage();
     refreshStatus();
     refreshRecording();
-    checkpoint(true, true);
   }
 
   // 驱动场景绘制，并对录像面板更新限频。
@@ -414,7 +401,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       refreshRecording();
       lastRecord = now;
     }
-  }, ended, options.savedRun?.world);
+  }, ended);
   for (const event of conversation.events) appendEvent(messages, event, entries, username);
   if (!messages.childElementCount) showEmptyChat();
   replaceAgent();
@@ -422,12 +409,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   refreshStatus();
   refreshDebug();
 
-  // 定期保存进度，在页面退出时再补一次存档。
-  const checkpointTimer = options.onProgress ? window.setInterval(() => checkpoint(), 1000) : undefined;
-  if (options.onProgress) {
-    checkpoint(true, true);
-    window.addEventListener('pagehide', () => checkpoint(true), { signal });
-  }
+  if (options.onEnter) watchSave(options.onEnter(), '无法记录最近游玩的关卡');
 
   // 根据侧栏空间计算编辑区可用高度。
   function chatHeightRange() {
@@ -564,18 +546,14 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     const turnUsername = username;
     input.value = '';
 
-    // 收到首条有效玩家指令时开始计时，并立即存下起点。
-    if (firstPromptAt === undefined) {
-      firstPromptAt = performance.now();
-      checkpoint(true);
-    }
+    // 收到首条有效玩家指令时开始计时。
+    firstPromptAt ??= performance.now();
 
     await current.send(text, level.systemPrompt ?? defaultPrompt);
 
-    // 确认仍是当前场景的活跃回合，才写入指令执行后的存档。
+    // 确认仍是当前场景的活跃回合，再同步模型和界面。
     if (!signal.aborted && current === agent) {
       if (model !== turnModel || username !== turnUsername) replaceAgent();
-      checkpoint(true);
       refreshStatus();
     }
   }, { signal });
@@ -641,10 +619,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
         refreshStatus();
       }
     },
-    // 卸载场景前保存进度，再清理监听、计时和运行时。
+    // 卸载场景时清理监听、计时和运行时。
     dispose() {
-      checkpoint(true);
-      window.clearInterval(checkpointTimer);
       window.clearTimeout(resultTimer);
       result?.close();
       picker.close();

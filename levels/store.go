@@ -39,7 +39,7 @@ type Entry struct {
 	Kind        string     `json:"kind"`
 	Description string     `json:"description,omitempty"`
 	Level       Definition `json:"level"`
-	// 物理规则的摘要，用于判断存档是否适用于此定义。
+	// 物理规则的摘要，用于判断成绩是否基于当前定义。
 	Revision string `json:"revision"`
 }
 
@@ -102,9 +102,9 @@ func NewStore(dir string) (*Store, error) {
 	return store, nil
 }
 
-// newEntry 从关卡的物理参数计算存档修订号。
+// newEntry 从关卡的物理参数计算关卡修订号。
 func newEntry(id, kind string, level Definition) Entry {
-	// Only physical changes invalidate a checkpoint.
+	// 名称、提示词和读屏选项与物理修订号无关。
 	board := level
 	board.Name, board.SystemPrompt = "", nil
 	board.DisableReadScreen = false

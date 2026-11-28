@@ -4,12 +4,12 @@ import type { Conversation } from './agent/agent.ts';
 import { mountEditor } from './editor/editor.ts';
 import { playableError } from './level/definition.ts';
 import type { LevelDefinition } from './level/definition.ts';
-import { createLevel, migrateDraft, migrateProgress, readCatalog, readProgress, updateLevel, updateLevelOrder, updateProgress } from './storage/game.ts';
+import { createLevel, markRecentLevel, migrateDraft, migrateProgress, readCatalog, readProgress, recordCompletion, updateLevel, updateLevelOrder } from './storage/game.ts';
 import type { LevelEntry, Progress } from './storage/game.ts';
 import { apiKeyField, apiKeyFieldMarkup } from './ui/api-key-field.ts';
 import { editableCombobox } from './ui/combobox.ts';
 import { element } from './ui/elements.ts';
-import { renderHome, renderLevels } from './ui/front.ts';
+import { homeLevel, renderHome, renderLevels } from './ui/front.ts';
 import { mountRun } from './ui/run.ts';
 import { providerSettings } from './ui/provider-settings.ts';
 import backdropURL from './render/backdrop.svg';
@@ -120,7 +120,7 @@ let progress: Progress = { levels: {} };
 // 按关卡跟踪编辑写入，供后续保存与路由切换等待。
 const editorWrites = new Map<string, Promise<void>>();
 let orderWrite: Promise<void> | undefined;
-let latestSave = 0;
+const progressWrites = new Set<Promise<unknown>>();
 let username = '';
 let setupRoute = '';
 let catalog: ModelCatalog = { defaultModel: '', modelProviders: [] };
@@ -174,6 +174,7 @@ async function renderRoute() {
   const isEditor = route.startsWith('#/create/');
   const custom = route === '#/levels/custom';
   const isLevels = route === '#/levels' || custom || route === '#/create';
+  const isContinue = route === '#/continue';
   const builtIns = library.filter(({ kind }) => kind === 'builtin');
   const id = playPath === '#/play' ? builtIns[0]?.id : (isPlay ? playPath : route).split('/')[2];
 
@@ -187,6 +188,29 @@ async function renderRoute() {
     if (!pending.some(Boolean)) break;
     await Promise.allSettled(pending);
     if (request !== routeRequest || route !== (location.hash || '#/')) return;
+  }
+
+  // 离开游玩场景后再等待已发出的写入，防止旧场景在导航途中继续推进。
+  if (isContinue || route === '#/' || isLevels || (isPlay && mountedRoute !== route)) {
+    disposeScene();
+    await Promise.allSettled(progressWrites);
+    if (request !== routeRequest || route !== (location.hash || '#/')) return;
+
+    // 继续游戏同时刷新目录，以识别其他页面刚创建或修改的自建关卡。
+    const [saved, latestCatalog] = await Promise.allSettled([
+      readProgress(), isContinue ? readCatalog() : undefined,
+    ]);
+    if (request !== routeRequest || route !== (location.hash || '#/')) return;
+    if (saved.status === 'fulfilled') progress = saved.value;
+    if (latestCatalog.status === 'fulfilled' && latestCatalog.value) {
+      library = latestCatalog.value.levels;
+      warnings = latestCatalog.value.warnings ?? [];
+    }
+    if (isContinue) {
+      const level = homeLevel(library, progress);
+      location.replace(level ? `#/play/${level.id}` : '#/');
+      return;
+    }
   }
 
   menu.close();
@@ -262,7 +286,7 @@ async function renderRoute() {
           if ((location.hash || '#/') === route) location.hash = `#/create/${created.id}`;
         }, saveLevelOrder);
     } else {
-      renderHome(workspace, builtIns, progress);
+      renderHome(workspace, progress);
     }
   }
   window.scrollTo(0, 0);
@@ -313,35 +337,24 @@ function renderEditor(entry: LevelEntry) {
   });
 }
 
-// 从匹配关卡修订号的存档恢复游玩场景。
+// 跟踪本页未完成的写入，供后续导航读取最新成绩和最近关卡。
+function trackProgressWrite<T>(pending: Promise<T>): Promise<T> {
+  progressWrites.add(pending);
+  const done = () => { progressWrites.delete(pending); };
+  void pending.then(done, done);
+  return pending;
+}
+
+// 每次进入正式游玩都创建独立的世界和对话。
 function renderRun(entry: LevelEntry, debug: boolean, nextLevel?: string) {
   backdrop.hidden = true;
   menuToggle.hidden = false;
   const { id, level, revision } = entry;
-  const record = progress.levels[id];
   activeRun = mountRun(workspace, {
-    level, catalog, username, debug, nextLevel, conversation: conversationFor(`play/${id}`),
-    completedAt: record?.completedAt,
-    savedRun: record?.revision === revision ? record.run : undefined,
-    async onProgress(patch) {
-      // 为进度更新生成递增时间戳，并先同步本地状态。
-      const savedAt = latestSave = Math.max(Date.now(), latestSave + 1);
-      const previous = progress.levels[id];
-      const local = { ...previous, revision, savedAt, run: patch.run ?? undefined };
-      if (patch.won) {
-        local.completedAt ??= new Date().toISOString();
-        if (patch.durationMS !== undefined && (local.bestDurationMS === undefined || patch.durationMS < local.bestDurationMS)) {
-          local.bestDurationMS = patch.durationMS;
-        }
-      }
-
-      progress.levels[id] = local;
-      if (patch.recent && entry.kind === 'builtin') progress.recentBuiltin = id;
-
-      // 服务回包可能乱序，只有本地进度未更新时才采用返回值。
-      const saved = await updateProgress(id, { ...patch, revision, savedAt });
-      if ((progress.levels[id]?.savedAt ?? 0) <= (saved.savedAt ?? 0)) progress.levels[id] = saved;
-    },
+    level, catalog, username, debug, nextLevel, conversation: { events: [], history: [] },
+    completedAt: progress.levels[id]?.completedAt,
+    onEnter: () => trackProgressWrite(markRecentLevel(id)),
+    onCompletion: (completion) => trackProgressWrite(recordCompletion(id, { ...completion, revision })),
     openSettings,
   });
 }
@@ -638,8 +651,6 @@ async function initialize() {
       warnings.push('部分旧版浏览器存档未能迁移，刷新可重试。');
     }
 
-    // 用现有存档中的最新时间初始化写入序号。
-    latestSave = Object.values(progress.levels).reduce((latest, item) => Math.max(latest, item.savedAt ?? 0), progress.recentBuiltinAt ?? 0);
     initialized = true;
     void renderRoute();
   } catch (error) {

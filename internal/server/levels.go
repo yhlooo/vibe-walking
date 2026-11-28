@@ -85,10 +85,10 @@ func (s *service) handleLevel(w http.ResponseWriter, r *http.Request) {
 func (s *service) handleProgress(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
-		progress, err := s.levels.ReadProgress()
+		progress, err := s.levels.ReadProgress(r.Context())
 		s.writeGameData(w, http.StatusOK, progress, err)
 	case http.MethodPost:
-		// 旧进度使用单独的结构解码，避免直接覆盖当前存档。
+		// 旧进度使用单独的结构解码，避免直接覆盖现有记录。
 		var old levels.LegacyProgress
 		if err := decodeJSON(http.MaxBytesReader(w, r.Body, 64<<10), &old, true); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_progress", "旧进度格式无效")
@@ -102,20 +102,33 @@ func (s *service) handleProgress(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleLevelProgress 更新指定关卡的存档及通关成绩。
-func (s *service) handleLevelProgress(w http.ResponseWriter, r *http.Request) {
+// handleCompletion 记录指定关卡的一次通关。
+func (s *service) handleCompletion(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		allowGameMethods(w, "PUT")
 		return
 	}
-	var update levels.ProgressUpdate
+	var update levels.CompletionUpdate
 	if err := decodeJSON(http.MaxBytesReader(w, r.Body, 16<<10), &update, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_progress", "游玩进度格式无效")
 		return
 	}
 
-	progress, err := s.levels.UpdateProgress(r.Context(), r.PathValue("id"), update)
-	s.writeGameData(w, http.StatusOK, progress, err)
+	completion, err := s.levels.RecordCompletion(r.Context(), r.PathValue("id"), r.PathValue("attemptID"), update)
+	s.writeGameData(w, http.StatusOK, completion, err)
+}
+
+// handleRecentLevel 更新首页继续入口所用的最近关卡。
+func (s *service) handleRecentLevel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		allowGameMethods(w, "PUT")
+		return
+	}
+	if err := s.levels.SetRecentLevel(r.Context(), r.PathValue("id")); err != nil {
+		s.writeGameData(w, http.StatusOK, nil, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // allowGameMethods 返回不支持的请求方法及对应的 Allow 标头。
