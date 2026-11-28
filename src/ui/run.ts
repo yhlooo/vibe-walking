@@ -42,10 +42,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
           <a class="scene-action primary" data-play-next hidden>下一关 →</a>
         </nav>`}
       <aside class="panel run-sidebar">
-        <div class="sidebar-header"><h2>与 Vibe 对话</h2><span class="subtle" data-run-status></span><button class="text-button" type="button" data-clear-chat disabled>清空历史</button></div>
-        <div class="messages" id="vibe-chat-history" role="log" aria-label="对话与工具事件" data-messages></div>
-        <div class="chat-divider" role="separator" tabindex="0" aria-orientation="horizontal"
-          aria-label="调整对话历史和输入栏高度" aria-controls="vibe-chat-history" data-chat-divider></div>
+        <div class="sidebar-header"><h2>与 Vibe 对话</h2><button class="text-button" type="button" data-clear-chat disabled>清空历史</button></div>
+        <div class="messages" role="log" aria-label="对话与工具事件" data-messages></div>
         <form class="composer" data-composer>
           <textarea aria-label="发给 Vibe 的消息" placeholder="告诉 Vibe 下一步怎么做…" rows="3"></textarea>
           <div class="composer-footer">
@@ -54,7 +52,17 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
               <button class="model-control model-parameters-trigger" type="button" data-model-parameters></button>
             </div>
             <button class="text-button" type="button" data-connect>配置模型</button>
-            <button class="primary" type="submit" disabled>发送</button>
+            <button class="primary composer-action" type="submit" aria-label="发送" title="发送" disabled>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M12 19V5m-6 6 6-6 6 6"/>
+              </svg>
+            </button>
+            <button class="primary composer-action" type="button" aria-label="停止" title="停止" data-stop hidden>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <rect x="6" y="6" width="12" height="12"/>
+              </svg>
+            </button>
           </div>
         </form>
         ${editor ? `
@@ -106,15 +114,14 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   const manualSwitch = root.querySelector<HTMLInputElement>('[data-manual]');
   const composer = element<HTMLFormElement>(root, '[data-composer]');
   const messages = element(root, '[data-messages]');
-  const divider = element(root, '[data-chat-divider]');
   const input = element<HTMLTextAreaElement>(composer, 'textarea');
   const send = element<HTMLButtonElement>(composer, 'button[type="submit"]');
+  const stop = element<HTMLButtonElement>(composer, '[data-stop]');
   const connect = element<HTMLButtonElement>(composer, '[data-connect]');
   const modelControls = element(composer, '[data-model-controls]');
   const modelTrigger = element<HTMLButtonElement>(modelControls, '[data-model-picker]');
   const optionsTrigger = element<HTMLButtonElement>(modelControls, '[data-model-parameters]');
   const clearChat = element<HTMLButtonElement>(root, '[data-clear-chat]');
-  const status = element(root, '[data-run-status]');
   const stageStatus = element(root, '[data-stage-status]');
   const debug = root.querySelector<HTMLElement>('[data-run-debug]');
   const requestTracker = debug ? { stats: emptyRequestStats(), onChange: refreshDebug } : undefined;
@@ -163,6 +170,18 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   let firstPromptAt: number | undefined;
   let actionModel: string | undefined;
   let saveError = '';
+
+  // 旧版浏览器通过滚动高度测量换行后的草稿。
+  const nativeDraftSizing = CSS.supports('field-sizing', 'content');
+  function resizeDraft() {
+    if (nativeDraftSizing) return;
+    const scrollTop = input.scrollTop;
+    input.style.overflowY = 'hidden';
+    input.style.height = '0';
+    input.style.height = `${input.scrollHeight}px`;
+    input.style.overflowY = '';
+    input.scrollTop = scrollTop;
+  }
   let saveNumber = 0;
   title.textContent = level.name;
   doneBadge.hidden = !options.completedAt;
@@ -180,20 +199,23 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     const chat = canChat() && !manual;
     const won = runtime.world.outcome === 'won';
 
-    // 同一按钮在生成期间用于中断，结算等待期间则禁用输入。
-    send.disabled = resultPending || (!busy && (!agent || !chat || !input.value.trim()));
-    send.textContent = busy ? '中断' : '发送';
+    // 发送与停止在同一位置切换，并保留操作焦点。
+    const focused = document.activeElement;
+    send.hidden = busy;
+    send.disabled = resultPending || busy || !agent || !chat || !input.value.trim();
+    stop.hidden = !busy;
+    stop.disabled = resultPending;
     connect.textContent = username ? '配置模型' : '设置用户名';
     connect.hidden = Boolean(model && username) || manual;
     modelControls.hidden = !model || !username || manual;
     modelTrigger.disabled = optionsTrigger.disabled = !chat && !resultPending;
     if (modelControls.hidden || modelTrigger.disabled) picker.close();
     input.disabled = !chat;
+    if (busy && !stop.disabled && focused === send) stop.focus({ preventScroll: true });
+    if (!busy && chat && focused === stop) input.focus({ preventScroll: true });
     input.placeholder = won && chat ? '和 Vibe 聊聊…' : '告诉 Vibe 下一步怎么做…';
     clearChat.hidden = won && result !== null;
     clearChat.disabled = conversation.events.length === 0;
-    status.textContent = manual ? '手动控制中' : busy ? (won ? 'Vibe 回复中' : 'Vibe 行动中')
-      : !chat ? '关卡已结束' : agent ? (won ? '等待消息' : '等待指令') : '';
   }
 
   // 刷新手动操作录像及复制按钮状态。
@@ -411,60 +433,18 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
 
   if (options.onEnter) watchSave(options.onEnter(), '无法记录最近游玩的关卡');
 
-  // 根据侧栏空间计算编辑区可用高度。
-  function chatHeightRange() {
-    const min = parseFloat(getComputedStyle(messages).minHeight);
-    const total = messages.offsetHeight + composer.offsetHeight;
-    const max = Math.max(min, total - parseFloat(getComputedStyle(composer).minHeight));
-    return { min, max, total };
+  // 仅在侧栏宽度变化时重新测量草稿的自动换行。
+  let draftResize: ResizeObserver | undefined;
+  if (!nativeDraftSizing) {
+    let draftWidth = composer.clientWidth;
+    draftResize = new ResizeObserver(() => {
+      const width = composer.clientWidth;
+      if (width === draftWidth) return;
+      draftWidth = width;
+      resizeDraft();
+    });
+    draftResize.observe(composer);
   }
-
-  // 将聊天输入区高度限制在可用范围内。
-  function resizeChat(height: number) {
-    const { min, max, total } = chatHeightRange();
-    composer.style.height = `${total - Math.min(max, Math.max(min, height))}px`;
-  }
-
-  const chatResize = new ResizeObserver(() => {
-    const { min, max } = chatHeightRange();
-    divider.setAttribute('aria-valuemin', String(min));
-    divider.setAttribute('aria-valuemax', String(max));
-    divider.setAttribute('aria-valuenow', String(messages.offsetHeight));
-  });
-  chatResize.observe(messages);
-  chatResize.observe(composer);
-
-  let drag: { pointer: number; y: number; historyHeight: number } | undefined;
-  divider.addEventListener('pointerdown', (event) => {
-    if (drag || event.button !== 0) return;
-    divider.focus({ preventScroll: true });
-    divider.setPointerCapture(event.pointerId);
-    drag = { pointer: event.pointerId, y: event.clientY, historyHeight: messages.offsetHeight };
-    event.preventDefault();
-  }, { signal });
-  window.addEventListener('pointermove', (event) => {
-    if (drag?.pointer === event.pointerId) resizeChat(drag.historyHeight + event.clientY - drag.y);
-  }, { signal });
-
-  // 结束聊天分隔条的指针调整。
-  function finishDrag(event: PointerEvent) {
-    if (drag?.pointer === event.pointerId) drag = undefined;
-  }
-  window.addEventListener('pointerup', finishDrag, { signal });
-  window.addEventListener('pointercancel', finishDrag, { signal });
-  divider.addEventListener('lostpointercapture', finishDrag, { signal });
-  divider.addEventListener('keydown', (event) => {
-    const height = messages.offsetHeight;
-    switch (event.key) {
-      case 'ArrowUp': resizeChat(height - 16); break;
-      case 'ArrowDown': resizeChat(height + 16); break;
-      case 'Home': resizeChat(chatHeightRange().min); break;
-      case 'End': resizeChat(chatHeightRange().max); break;
-      default: return;
-    }
-    event.preventDefault();
-    event.stopPropagation();
-  }, { signal });
 
   // 关闭结算弹窗并通过统一入口重开本局。
   function restart() {
@@ -514,6 +494,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     delete conversation.summary;
     delete conversation.interrupted;
     input.value = '';
+    resizeDraft();
     showEmptyChat();
     refreshStatus();
     refreshDebug();
@@ -521,7 +502,10 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
 
   connect.addEventListener('click', options.openSettings, { signal });
   modelTrigger.addEventListener('click', () => { if (model) picker.prepare(catalog, model); }, { signal });
-  input.addEventListener('input', refreshStatus, { signal });
+  input.addEventListener('input', () => {
+    resizeDraft();
+    refreshStatus();
+  }, { signal });
   input.addEventListener('keydown', (event) => {
     // 普通回车用于发送，Shift 回车或输入法组合期间保留文字输入行为。
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -530,21 +514,18 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     }
   }, { signal });
 
-  // 发送玩家指示，或中断正在进行的对话。
+  stop.addEventListener('click', () => agent?.interrupt(), { signal });
+
+  // 发送玩家指示，保持正在进行的回合独立。
   composer.addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (resultPending) return;
-    if (agent?.busy) {
-      agent.interrupt();
-      return;
-    }
-
     const text = input.value.trim();
-    if (send.disabled || !agent || !text) return;
+    if (send.disabled || !agent || agent.busy || !text) return;
     const current = agent;
     const turnModel = model;
     const turnUsername = username;
     input.value = '';
+    resizeDraft();
 
     // 收到首条有效玩家指令时开始计时。
     firstPromptAt ??= performance.now();
@@ -624,7 +605,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       window.clearTimeout(resultTimer);
       result?.close();
       picker.close();
-      chatResize.disconnect();
+      draftResize?.disconnect();
 
       events.abort();
       agent?.dispose();

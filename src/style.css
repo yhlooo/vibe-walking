@@ -127,14 +127,12 @@ h2 { font-size: 15px; font-weight: 730; }
 .success { color: var(--success); font-weight: 700; }
 .invalid { color: var(--danger); }
 
-/* 聊天侧栏、消息、可调整分隔条和动作录像。 */
-.run-sidebar { display: flex; flex-direction: column; min-height: 240px; contain: size; }
-.run-sidebar:has(.recording-panel:not([hidden])) { min-height: 400px; }
+/* 聊天侧栏、消息、输入栏和动作录像。 */
+.run-sidebar { display: flex; flex-direction: column; min-height: 240px; }
+.run-sidebar:has(.recording-panel:not([hidden])) { min-height: 440px; }
 .sidebar-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 51px; padding: 10px 14px; }
 .sidebar-header { border-bottom: 1px solid var(--border); }
-.sidebar-header [data-run-status] { margin-inline-start: auto; white-space: nowrap; }
-.sidebar-header [data-run-status]:empty { display: none; }
-.messages { display: flex; flex-direction: column; flex: 1 1 0; min-height: 56px; overflow: auto; padding: 15px 14px; gap: 12px; }
+.messages { display: flex; flex-direction: column; flex: 1 1 0; min-height: 56px; contain: size; overflow: auto; padding: 15px 14px; gap: 12px; }
 .messages > *, .sidebar-header, .recording-panel { flex: none; }
 .chat-empty { display: grid; justify-items: start; align-content: center; min-height: 100%; gap: 9px; padding: 4px 3px; }
 .vibe-mark { display: block; }
@@ -149,22 +147,24 @@ h2 { font-size: 15px; font-weight: 730; }
 .tool-event summary { cursor: pointer; }
 .tool-event img { width: 100%; display: block; margin-top: 8px; border-radius: 3px; }
 .tool-event pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 11px; margin-bottom: 0; }
-.chat-divider {
-  display: grid;
-  flex: 0 0 13px;
-  place-items: center;
-  border-block: 1px solid var(--border);
-  background: var(--inset);
-  cursor: ns-resize;
-  touch-action: none;
+.composer { flex: none; background: var(--inset); }
+.composer textarea {
+  display: block;
+  width: 100%;
+  min-height: calc(3lh + 20px);
+  max-height: calc(8lh + 20px);
+  line-height: 20px;
+  padding: 10px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  field-sizing: content;
+  overflow-y: auto;
+  resize: none;
 }
-.chat-divider::before { content: ""; width: 30px; height: 3px; border-radius: 2px; background: #736387; }
-.chat-divider:hover::before, .chat-divider:focus-visible::before { background: var(--accent); }
-.chat-divider:focus-visible { outline-offset: -2px; }
-.composer { display: flex; flex: 0 1 auto; flex-direction: column; height: 134px; min-height: 119px; padding: 9px 13px 11px; }
-.composer textarea { display: block; flex: 1 1 0; width: 100%; min-height: 52px; resize: none; }
-.composer-footer { display: flex; flex: none; align-items: center; justify-content: space-between; gap: 8px; margin-top: 9px; }
-.composer-footer button[type="submit"] { margin-left: auto; min-width: 68px; }
+.composer textarea:focus { outline: none; }
+.composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 14px 10px; }
+.composer-action { display: grid; flex: none; width: 38px; place-items: center; margin-left: auto; padding: 0; border-radius: 50%; }
 .recording-panel { border-top: 1px solid var(--border); }
 .recording { display: block; width: 100%; height: clamp(72px, 14vh, 124px); border: 0; border-radius: 0; resize: none; padding: 14px; font-family: ui-monospace, Menlo, monospace; color: #d4bfeb; font-size: 12px; }
 .record-status { padding: 6px 14px; }
@@ -347,8 +347,8 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
   .editor-layout { grid-template-columns: minmax(0, 1fr) minmax(174px, .36fr); }
   .editor-layout .run-layout { grid-template-columns: minmax(0, 1fr); }
   .editor-layout .stage-panel { grid-row: 1; }
-  .editor-layout .run-sidebar { contain: none; height: clamp(340px, 67svh, 520px); }
-  .editor-layout .run-sidebar:has(.recording-panel:not([hidden])) { min-height: 500px; }
+  .editor-layout .run-sidebar { min-height: clamp(340px, 67svh, 520px); }
+  .editor-layout .run-sidebar:has(.recording-panel:not([hidden])) { min-height: clamp(500px, 67svh, 520px); }
 }
 @media (max-width: 680px) {
   .run-layout, .editor-layout { grid-template-columns: minmax(0, 1fr); }
@@ -357,7 +357,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
   .play-navigation ~ .stage-panel { grid-row: 2; }
   .editor-layout .run-sidebar { grid-row: 3; }
   .editor-tools { grid-row: 2; }
-  .run-sidebar { contain: none; height: clamp(340px, 67svh, 520px); }
+  .run-sidebar { min-height: clamp(340px, 67svh, 520px); }
   .stage-footer { flex-wrap: wrap; }
   .scene-backdrop { object-position: 65% bottom; }
   .scene-backdrop:not([hidden]) + .workspace::before { background: linear-gradient(90deg, #13121bf0, #1714248c 90%); }
@@ -467,7 +467,7 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
   border-color: transparent;
 }
 .model-trigger { min-width: 0; overflow: hidden; text-overflow: ellipsis; text-align: start; }
-.model-parameters-trigger { flex: none; color: #d8cce6; font-size: 12px; font-weight: 650; }
+.model-parameters-trigger { flex: none; color: var(--muted); font-size: 12px; font-weight: 650; }
 
 /* 两个菜单独立定位。供应商与右侧模型列表各自滚动。 */
 .model-picker { position: fixed; visibility: hidden; inset: auto; margin: 0; font-size: 13px; }
