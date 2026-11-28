@@ -107,15 +107,17 @@ func newHandler(dataDir string, localOnly bool, logger logr.Logger) (http.Handle
 	}))
 	mux := http.NewServeMux()
 	mux.Handle("/api/v1/settings", guard.Handler(http.HandlerFunc(s.handleSettings)))
-	mux.Handle("/api/v1/models", guard.Handler(http.HandlerFunc(s.handleModels)))
+	mux.Handle("POST /llm/providers/models", guard.Handler(http.HandlerFunc(s.handleModels)))
 	mux.Handle("/api/v1/levels", guard.Handler(http.HandlerFunc(s.handleLevels)))
 	mux.Handle("/api/v1/levels/{id}", guard.Handler(http.HandlerFunc(s.handleLevel)))
 	mux.Handle("/api/v1/progress", guard.Handler(http.HandlerFunc(s.handleProgress)))
 	mux.Handle("/api/v1/progress/{id}", guard.Handler(http.HandlerFunc(s.handleLevelProgress)))
+	mux.Handle("GET /llm/providers", guard.Handler(http.HandlerFunc(s.handleProviders)))
+	mux.Handle("GET /llm/providers/{providerID}/models", guard.Handler(http.HandlerFunc(s.handleProviderModels)))
 	for _, proxy := range modelProxies {
-		mux.Handle("/llmproxies"+proxy.suffix, guard.Handler(http.HandlerFunc(s.proxy(proxy))))
+		mux.Handle("/llm/proxies"+proxy.path, guard.Handler(s.proxy(proxy)))
 	}
-	for _, path := range []string{"/api/v1", "/api/v1/", "/llmproxies", "/llmproxies/"} {
+	for _, path := range []string{"/api/v1", "/api/v1/", "/llm/", "/llm"} {
 		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "not_found", "接口不存在")
 		})

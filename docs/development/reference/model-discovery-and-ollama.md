@@ -53,3 +53,29 @@
 > SDKs accept file paths, URLs or raw bytes while the REST API expects base64-encoded image data.
 
 [Ollama — Vision](https://docs.ollama.com/capabilities/vision)
+
+## 生成与发现端点
+
+> Start by updating your generation endpoints from `post /v1/chat/completions` to `post /v1/responses`.
+
+[OpenAI — Migrate to the Responses API](https://developers.openai.com/api/docs/guides/migrate-to-responses)
+
+> `GET /models`
+
+[OpenAI API Reference — List models](https://developers.openai.com/api/reference/resources/models/methods/list)
+
+> `POST /v1/messages`
+
+[Claude API Reference — Create a Message](https://platform.claude.com/docs/en/api/messages/create)
+
+> `GET /v1/models`
+
+[Claude API Reference — List Models](https://platform.claude.com/docs/en/api/models/list)
+
+> `POST /api/chat`
+
+[Ollama API Reference — Generate a chat message](https://docs.ollama.com/api/chat)
+
+> `GET /api/tags`
+
+[Ollama API Reference — List models](https://docs.ollama.com/api/tags)

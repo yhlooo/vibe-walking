@@ -359,6 +359,30 @@ test('a hidden victory notice reaches the model and stays in history after switc
     ['先看一眼。', notice, '接下来呢？']);
 });
 
+test('switching providers with the same protocol rebuilds history from conversation text', async (t) => {
+  const api = 'OpenAIResponses';
+  const conversation = { events: [], history: [] };
+  const requests = [];
+  const tools = { whenActive: async () => {}, readScreen: () => png, outcome: () => 'active' };
+  t.mock.method(globalThis, 'fetch', async (_url, request) => {
+    requests.push(JSON.parse(request.body));
+    return streamedFixture(api, 3);
+  });
+  const createAgent = (model) => new Agent({ api, model, baseURL: '' }, 'prompt', tools, () => {}, conversation);
+  const first = createAgent('first/mock');
+  await first.send('第一条消息');
+  const reasoning = { type: 'reasoning', encrypted_content: 'provider-specific' };
+  conversation.history.push(reasoning);
+  await first.send('同一供应商');
+  assert.ok(requests[1].input.some(({ encrypted_content }) => encrypted_content === reasoning.encrypted_content));
+
+  await createAgent('second/mock').send('切到另一家');
+  assert.equal(requests[2].model, 'second/mock');
+  assert.ok(!requests[2].input.some(({ encrypted_content }) => encrypted_content));
+  assert.deepEqual(requests[2].input.filter(({ role }) => role === 'user').map(({ content }) => content),
+    ['第一条消息', '同一供应商', '切到另一家']);
+});
+
 test('invalid Anthropic tool JSON fails each affected call and allows the remaining call', async (t) => {
   const requests = [];
   const conversation = { events: [], history: [] };

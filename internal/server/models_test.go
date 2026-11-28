@@ -48,7 +48,7 @@ func TestModelDiscoveryWithDraftConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings := fmt.Sprintf(`{"model":{"api":"AnthropicMessages","baseURL":%q,"apiKey":"saved","model":"selected"}}`, upstream.URL+"/claude/v1")
+	settings := fmt.Sprintf(`{"modelProviders":[{"id":"claude","protocol":"AnthropicMessages","baseURL":%q,"apiKey":"saved","models":[{"id":"selected"}]}]}`, upstream.URL+"/claude")
 	if reply := send(handler, http.MethodPost, "/api/v1/settings", settings); reply.Code != http.StatusOK {
 		t.Fatalf("save settings: %s", reply.Body)
 	}
@@ -58,24 +58,31 @@ func TestModelDiscoveryWithDraftConnection(t *testing.T) {
 	}{
 		{"OpenAIChatCompletions", "/gateway/v1", `,"apiKey":"draft"`, `{"models":["model-a"]}`},
 		{"OpenAIResponses", "/gateway/v1/", `,"apiKey":"draft"`, `{"models":["model-a"]}`},
-		{"AnthropicMessages", "/claude/v1/", "", `{"models":["first+id","second"]}`},
-		{"OllamaChat", "/ollama", "", `{"models":["legacy:latest","vision:latest"]}`},
+		{"AnthropicMessages", "/claude/", "", `{"models":["first+id","second"]}`},
+		{"OllamaChat", "/ollama/api", "", `{"models":["legacy:latest","vision:latest"]}`},
 	} {
 		t.Run(tc.protocol, func(t *testing.T) {
-			body := fmt.Sprintf(`{"api":%q,"baseURL":%q%s}`, tc.protocol, upstream.URL+tc.path, tc.key)
-			reply := send(handler, http.MethodPost, "/api/v1/models", body)
+			body := fmt.Sprintf(`{"protocol":%q,"providerID":"claude","baseURL":%q%s}`, tc.protocol, upstream.URL+tc.path, tc.key)
+			reply := send(handler, http.MethodPost, "/llm/providers/models", body)
 			if reply.Code != http.StatusOK || strings.TrimSpace(reply.Body.String()) != tc.want {
 				t.Fatalf("discover models: %d %s", reply.Code, reply.Body)
 			}
 		})
 	}
-	body := fmt.Sprintf(`{"api":"OpenAIResponses","baseURL":%q}`, upstream.URL+"/unavailable")
-	if reply := send(handler, http.MethodPost, "/api/v1/models", body); reply.Code != http.StatusBadGateway ||
+	body := fmt.Sprintf(`{"protocol":"OpenAIResponses","baseURL":%q}`, upstream.URL+"/unavailable")
+	if reply := send(handler, http.MethodPost, "/llm/providers/models", body); reply.Code != http.StatusBadGateway ||
 		!strings.Contains(reply.Body.String(), "HTTP 401") || strings.Contains(reply.Body.String(), "private upstream response") {
 		t.Fatalf("upstream error: %d %s", reply.Code, reply.Body)
 	}
 	if reply := send(handler, http.MethodGet, "/api/v1/settings", ""); strings.Contains(reply.Body.String(), `"apiKey"`) ||
-		!strings.Contains(reply.Body.String(), `"model":"selected"`) {
+		!strings.Contains(reply.Body.String(), `"defaultModel":"claude/selected"`) {
 		t.Fatalf("discovery modified or exposed saved settings: %s", reply.Body)
+	}
+	if reply := send(handler, http.MethodGet, "/llm/providers/claude/models", ""); reply.Code != http.StatusOK ||
+		strings.TrimSpace(reply.Body.String()) != `{"models":[{"id":"first+id"},{"id":"second"}]}` {
+		t.Fatalf("discover configured provider: %d %s", reply.Code, reply.Body)
+	}
+	if reply := send(handler, http.MethodGet, "/llm/providers/unknown/models", ""); reply.Code != http.StatusNotFound {
+		t.Fatalf("unknown provider: %d %s", reply.Code, reply.Body)
 	}
 }

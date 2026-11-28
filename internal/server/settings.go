@@ -1,7 +1,6 @@
 package server
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
@@ -25,44 +24,44 @@ type service struct {
 	settings config.Config
 }
 
-type modelSummary struct {
-	API             config.ModelAPIProtocol `json:"api"`
-	BaseURL         string                  `json:"baseURL"`
-	Model           string                  `json:"model"`
-	HasAPIKey       bool                    `json:"hasAPIKey"`
-	MaxInputToken   int64                   `json:"maxInputToken"`
-	ReasoningEffort string                  `json:"reasoningEffort"`
+type providerSummary struct {
+	ID        string                  `json:"id"`
+	Name      string                  `json:"name,omitempty"`
+	Protocol  config.ModelAPIProtocol `json:"protocol"`
+	BaseURL   string                  `json:"baseURL"`
+	HasAPIKey bool                    `json:"hasAPIKey"`
+	Models    []config.Model          `json:"models"`
+}
+
+func summarizeProviders(settings config.Config) []providerSummary {
+	providers := make([]providerSummary, 0, len(settings.ModelProviders))
+	for _, provider := range settings.ModelProviders {
+		models := provider.Models
+		if models == nil {
+			models = []config.Model{}
+		}
+		providers = append(providers, providerSummary{
+			ID: provider.ID, Name: provider.Name, Protocol: provider.Protocol, BaseURL: provider.BaseURL,
+			HasAPIKey: provider.APIKey != "", Models: models,
+		})
+	}
+	return providers
 }
 
 type settingsSummary struct {
-	Model    *modelSummary `json:"model"`
-	Username string        `json:"username,omitempty"`
+	Username       string            `json:"username,omitempty"`
+	DefaultModel   string            `json:"defaultModel"`
+	ModelProviders []providerSummary `json:"modelProviders"`
 }
 
 func summarize(settings config.Config) settingsSummary {
-	model := settings.Model
-	if model.Protocol == "" {
-		return settingsSummary{Username: settings.Username}
-	}
-	return settingsSummary{Username: settings.Username, Model: &modelSummary{
-		API: model.Protocol, BaseURL: model.BaseURL, Model: model.Model, HasAPIKey: model.APIKey != "",
-		MaxInputToken: model.MaxInputToken, ReasoningEffort: model.ReasoningEffort,
-	}}
+	return settingsSummary{settings.Username, settings.DefaultModel, summarizeProviders(settings)}
 }
 
 func (s *service) readSettings() config.Config {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.settings
-}
-
-type modelUpdate struct {
-	API             config.ModelAPIProtocol `json:"api"`
-	BaseURL         string                  `json:"baseURL"`
-	Model           string                  `json:"model"`
-	APIKey          *string                 `json:"apiKey"`
-	MaxInputToken   *int64                  `json:"maxInputToken"`
-	ReasoningEffort *string                 `json:"reasoningEffort"`
 }
 
 func (s *service) handleSettings(w http.ResponseWriter, r *http.Request) {
@@ -77,59 +76,71 @@ func (s *service) handleSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+type providerUpdate struct {
+	config.ModelProvider
+	APIKey     *string `json:"apiKey"`
+	PreviousID string  `json:"previousID"`
+}
+
 func (s *service) updateSettings(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Model    json.RawMessage `json:"model"`
-		Username *string         `json:"username"`
+		Username       *string           `json:"username"`
+		DefaultModel   *string           `json:"defaultModel"`
+		ModelProviders *[]providerUpdate `json:"modelProviders"`
 	}
-	if err := decodeJSON(http.MaxBytesReader(w, r.Body, 64<<10), &body, true); err != nil ||
-		(body.Model == nil && body.Username == nil) {
-		writeError(w, http.StatusBadRequest, "invalid_settings", "请提交模型或用户名设置")
+	if err := decodeJSON(http.MaxBytesReader(w, r.Body, 1<<20), &body, true); err != nil ||
+		(body.Username == nil && body.DefaultModel == nil && body.ModelProviders == nil) {
+		writeError(w, http.StatusBadRequest, "invalid_settings", "请提交有效的模型或用户名设置")
 		return
 	}
 	if body.Username != nil && utf8.RuneCountInString(*body.Username) > 20 {
 		writeError(w, http.StatusBadRequest, "invalid_settings", "用户名最多 20 个字符")
 		return
 	}
-	var update *modelUpdate
-	if body.Model != nil && decodeJSON(bytes.NewReader(body.Model), &update, true) != nil {
-		writeError(w, http.StatusBadRequest, "invalid_settings", "模型设置格式错误")
-		return
-	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	next := s.settings
 	if body.Username != nil {
 		next.Username = *body.Username
 	}
-	if body.Model != nil {
-		next.Model = config.ModelConfig{}
-	}
-	if update != nil {
-		model := config.ModelConfig{Protocol: update.API, BaseURL: update.BaseURL, Model: update.Model}
-		if update.APIKey != nil {
-			model.APIKey = *update.APIKey
-		}
-		model.MaxInputToken = s.settings.Model.MaxInputToken
-		model.ReasoningEffort = s.settings.Model.ReasoningEffort
-		if update.MaxInputToken != nil {
-			if *update.MaxInputToken <= 0 {
-				writeError(w, http.StatusBadRequest, "invalid_settings", "上下文长度必须大于 0")
-				return
+	if body.ModelProviders != nil {
+		next.ModelProviders = make([]config.ModelProvider, 0, len(*body.ModelProviders))
+		next.DefaultModel = ""
+		for _, update := range *body.ModelProviders {
+			provider := update.ModelProvider
+			if update.APIKey != nil {
+				provider.APIKey = *update.APIKey
 			}
-			model.MaxInputToken = *update.MaxInputToken
+			next.ModelProviders = append(next.ModelProviders, provider)
 		}
-		if update.ReasoningEffort != nil {
-			model.ReasoningEffort = *update.ReasoningEffort
-		}
-		var err error
-		model, err = model.Normalize()
-		if err != nil {
+	}
+	if body.DefaultModel != nil {
+		next.DefaultModel = *body.DefaultModel
+	}
+	// A default-only or username-only update can reuse the immutable catalog.
+	if body.ModelProviders != nil {
+		if err := next.NormalizeProviders(); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_settings", err.Error())
 			return
 		}
-		useSavedKey(&model, update.APIKey, s.settings.Model)
-		next.Model = model
+	} else if body.DefaultModel != nil {
+		if _, _, ok := next.FindModel(next.DefaultModel); !ok {
+			writeError(w, http.StatusBadRequest, "invalid_settings", "默认模型未配置")
+			return
+		}
+	}
+	if body.ModelProviders != nil {
+		for i, update := range *body.ModelProviders {
+			provider := &next.ModelProviders[i]
+			id := provider.ID
+			if update.PreviousID != "" {
+				id = update.PreviousID
+			}
+			if saved, ok := s.settings.FindProvider(id); ok {
+				provider.Connection = provider.Connection.WithSavedSettings(saved.Connection, update.APIKey == nil)
+			}
+		}
 	}
 	if err := config.SaveConfig(r.Context(), &next, s.path); err != nil {
 		writeError(w, http.StatusInternalServerError, "settings_write_failed", "无法保存模型设置")
@@ -137,12 +148,6 @@ func (s *service) updateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	s.settings = next
 	writeJSON(w, http.StatusOK, summarize(next))
-}
-
-func useSavedKey(model *config.ModelConfig, key *string, saved config.ModelConfig) {
-	if key == nil && model.Protocol == saved.Protocol && model.BaseURL == saved.BaseURL {
-		model.APIKey = saved.APIKey
-	}
 }
 
 func decodeJSON(r io.Reader, dst any, strict bool) error {

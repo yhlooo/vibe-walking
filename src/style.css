@@ -368,3 +368,22 @@ dialog::backdrop { background: #0b0911a8; backdrop-filter: blur(3px); }
 .message.thinking { color: var(--muted); }
 .message.thinking summary { cursor: pointer; font-size: 12px; }
 .message.thinking > p { margin-top: 6px; }
+
+.provider-list, .provider-fields, .model-options { display: grid; gap: 10px; min-width: 0; }
+.provider-card { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--inset); }
+.provider-card > summary { padding: 10px; cursor: pointer; overflow-wrap: anywhere; }
+.provider-card[open] > summary { border-bottom: 1px solid var(--border); }
+.provider-fields { padding: 12px; }
+.provider-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings-form .setting-check { display: flex; align-items: center; }
+.setting-check input { margin: 0; accent-color: var(--accent); }
+.drag-handle { display: inline-block; margin-inline: 4px 8px; color: var(--muted); cursor: grab; }
+.model-trigger { display: flex; align-items: center; gap: 4px; min-width: 0; max-width: 65%; }
+.model-trigger-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.model-picker { width: min(420px, calc(100% - 32px)); }
+.model-choices { display: grid; gap: 8px; }
+.model-choices:empty { display: none; }
+.model-choices button { white-space: normal; text-align: left; overflow-wrap: anywhere; }
+.model-choices .current-model-choice { border-color: var(--accent); }
+.model-options label { display: grid; gap: 6px; }
+.model-picker > [data-picker-back] { margin-top: 10px; }

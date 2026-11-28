@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,7 +24,7 @@ func TestSettingsAndModelProxies(t *testing.T) {
 	type received struct {
 		path, model, auth, key, version, cookie string
 	}
-	requests := make(chan received, 1)
+	requests := make(chan received, len(modelProxies))
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body struct{ Model string }
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -43,47 +44,70 @@ func TestSettingsAndModelProxies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := send(handler, http.MethodGet, "/api/v1/settings", ""); got.Body.String() != "{\"model\":null}\n" {
+	if got := send(handler, http.MethodGet, "/api/v1/settings", ""); got.Body.String() != "{\"defaultModel\":\"\",\"modelProviders\":[]}\n" {
 		t.Fatalf("unconfigured settings: %s", got.Body)
 	}
-	if got := send(handler, http.MethodPost, "/llmproxies/responses", `{}`); got.Code != http.StatusNotFound {
+	if got := send(handler, http.MethodPost, "/llm/proxies/openai/v1/responses", `{"model":"fixture/missing"}`); got.Code != http.StatusNotFound {
 		t.Fatalf("unconfigured proxy status: %d", got.Code)
 	}
-
-	for _, proxy := range modelProxies {
-		body, _ := json.Marshal(config.Config{Model: config.ModelConfig{
-			Protocol: proxy.protocol, BaseURL: upstream.URL + "/gateway/v1/", Model: "configured-model", APIKey: "test-secret",
-		}})
-		result := send(handler, http.MethodPost, "/api/v1/settings", string(body))
-		if result.Code != http.StatusOK || strings.Contains(result.Body.String(), "test-secret") ||
-			!strings.Contains(result.Body.String(), `"hasAPIKey":true`) {
-			t.Fatalf("save settings: %d %s", result.Code, result.Body)
-		}
-		for _, candidate := range modelProxies {
-			if candidate != proxy {
-				result := send(handler, http.MethodPost, "/llmproxies"+candidate.suffix, `{}`)
-				if result.Code != http.StatusNotFound || !strings.Contains(result.Body.String(), "proxy_not_enabled") {
-					t.Fatalf("inactive proxy: %d %s", result.Code, result.Body)
-				}
+	providers := make([]config.ModelProvider, 0, len(modelProxies))
+	for i, proxy := range modelProxies {
+		providers = append(providers, config.ModelProvider{
+			ID: fmt.Sprintf("fixture-%d", i),
+			Connection: config.Connection{Protocol: proxy.protocol,
+				BaseURL: fmt.Sprintf("%s/gateway/%d/", upstream.URL, i), APIKey: fmt.Sprintf("test-secret-%d", i)},
+			Models: []config.Model{{ID: "vendor/configured-model", Vision: true}},
+		})
+	}
+	body, _ := json.Marshal(config.Config{DefaultModel: "fixture-1/vendor/configured-model", ModelProviders: providers})
+	result := send(handler, http.MethodPost, "/api/v1/settings", string(body))
+	if result.Code != http.StatusOK || strings.Contains(result.Body.String(), "test-secret") ||
+		!strings.Contains(result.Body.String(), `"hasAPIKey":true`) {
+		t.Fatalf("save settings: %d %s", result.Code, result.Body)
+	}
+	if got := send(handler, http.MethodPost, "/llm/proxies/openai/v1/responses", `{"model":"fixture-0/vendor/configured-model"}`); got.Code != http.StatusNotFound {
+		t.Fatalf("wrong protocol status: %d %s", got.Code, got.Body)
+	}
+	if got := send(handler, http.MethodPost, "/llm/proxies/openai/v1/responses", `{"model":"unqualified"}`); got.Code != http.StatusBadRequest {
+		t.Fatalf("unqualified model status: %d %s", got.Code, got.Body)
+	}
+	var pending sync.WaitGroup
+	for i, proxy := range modelProxies {
+		pending.Go(func() {
+			request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/llm/proxies"+proxy.path,
+				strings.NewReader(fmt.Sprintf(`{"model":%q}`, providers[i].ID+"/vendor/configured-model")))
+			request.Header.Set("Authorization", "Bearer ignored")
+			request.Header.Set("Cookie", "not-for-upstream=1")
+			reply := httptest.NewRecorder()
+			handler.ServeHTTP(reply, request)
+			if reply.Code != http.StatusTooManyRequests || reply.Header().Get("Content-Type") != "application/json" ||
+				!strings.Contains(reply.Body.String(), "fixture rate limit") {
+				t.Errorf("proxy response: %d %s", reply.Code, reply.Body)
 			}
-		}
-		request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/llmproxies"+proxy.suffix, strings.NewReader(`{"model":"ignored"}`))
-		request.Header.Set("Authorization", "Bearer ignored")
-		request.Header.Set("Cookie", "not-for-upstream=1")
-		reply := httptest.NewRecorder()
-		handler.ServeHTTP(reply, request)
-		if reply.Code != http.StatusTooManyRequests || reply.Header().Get("Content-Type") != "application/json" ||
-			!strings.Contains(reply.Body.String(), "fixture rate limit") {
-			t.Fatalf("proxy response: %d %s", reply.Code, reply.Body)
-		}
-		got := <-requests
-		want := received{path: "/gateway/v1" + proxy.suffix, model: "configured-model", auth: "Bearer test-secret"}
+		})
+	}
+	pending.Wait()
+	close(requests)
+	gotRequests := make(map[string]received)
+	for got := range requests {
+		gotRequests[got.path] = got
+	}
+	for i, proxy := range modelProxies {
+		key := providers[i].APIKey
+		want := received{path: fmt.Sprintf("/gateway/%d", i) + proxy.upstreamSuffix, model: "vendor/configured-model", auth: "Bearer " + key}
 		if proxy.protocol == config.AnthropicMessagesAPI {
-			want.auth, want.key, want.version = "", "test-secret", "2023-06-01"
+			want.auth, want.key, want.version = "", key, "2023-06-01"
 		}
-		if got != want {
-			t.Errorf("unexpected upstream request for %s", proxy.protocol)
+		if got := gotRequests[want.path]; got != want {
+			t.Errorf("unexpected upstream request for %s: %#v", proxy.protocol, got)
 		}
+	}
+
+	catalog := send(handler, http.MethodGet, "/llm/providers", "")
+	if catalog.Code != http.StatusOK || strings.Contains(catalog.Body.String(), "test-secret") ||
+		!strings.Contains(catalog.Body.String(), `"defaultModel":"fixture-1/vendor/configured-model"`) ||
+		!strings.Contains(catalog.Body.String(), `"providers":[`) {
+		t.Fatalf("provider catalog: %d %s", catalog.Code, catalog.Body)
 	}
 
 	info, err := os.Stat(path)
@@ -95,18 +119,18 @@ func TestSettingsAndModelProxies(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := send(restarted, http.MethodGet, "/api/v1/settings", "")
-	if !strings.Contains(got.Body.String(), `"api":"OllamaChat"`) {
+	if !strings.Contains(got.Body.String(), `"protocol":"OllamaChat"`) {
 		t.Fatalf("configuration after restart: %s", got.Body)
 	}
-	sameEndpoint := `{"model":{"api":"OllamaChat","baseURL":"` + upstream.URL + `/gateway/v1/","model":"new-model"}}`
+	sameEndpoint := fmt.Sprintf(`{"modelProviders":[{"id":"renamed","previousID":"fixture-3","protocol":"OllamaChat","baseURL":%q,"models":[{"id":"new-model"}]}]}`, upstream.URL+"/gateway/3/")
 	if got := send(restarted, http.MethodPost, "/api/v1/settings", sameEndpoint); !strings.Contains(got.Body.String(), `"hasAPIKey":true`) {
 		t.Fatalf("same endpoint should retain the old API key: %s", got.Body)
 	}
-	differentEndpoint := strings.Replace(sameEndpoint, "/gateway/v1/", "/other/v1", 1)
+	differentEndpoint := strings.Replace(strings.Replace(sameEndpoint, "fixture-3", "renamed", 1), "/gateway/3/", "/other/api", 1)
 	if got := send(restarted, http.MethodPost, "/api/v1/settings", differentEndpoint); !strings.Contains(got.Body.String(), `"hasAPIKey":false`) {
 		t.Fatalf("different endpoint should drop the old API key: %s", got.Body)
 	}
-	if got := send(restarted, http.MethodPost, "/api/v1/settings", `{"model":null}`); got.Body.String() != "{\"model\":null}\n" {
+	if got := send(restarted, http.MethodPost, "/api/v1/settings", `{"modelProviders":[]}`); got.Body.String() != "{\"defaultModel\":\"\",\"modelProviders\":[]}\n" {
 		t.Fatalf("clear settings: %d %s", got.Code, got.Body)
 	}
 }
@@ -122,7 +146,7 @@ func TestStaticAssetsAndOriginGuard(t *testing.T) {
 	if got := send(handler, http.MethodGet, "/api/v1/unknown", ""); got.Code != http.StatusNotFound {
 		t.Fatalf("unknown API status: %d", got.Code)
 	}
-	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/settings", strings.NewReader(`{"model":null}`))
+	request := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/settings", strings.NewReader(`{"modelProviders":[]}`))
 	request.Header.Set("Sec-Fetch-Site", "cross-site")
 	reply := httptest.NewRecorder()
 	handler.ServeHTTP(reply, request)
@@ -144,7 +168,7 @@ func TestSaveFailureKeepsTheActiveConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	previous := `{"model":{"api":"OpenAIResponses","baseURL":"http://127.0.0.1/v1","model":"previous"}}`
+	previous := `{"modelProviders":[{"id":"default","protocol":"OpenAIResponses","baseURL":"http://127.0.0.1/v1","models":[{"id":"previous"}]}]}`
 	if got := send(handler, http.MethodPost, "/api/v1/settings", previous); got.Code != http.StatusOK {
 		t.Fatal(got.Code)
 	}
@@ -154,10 +178,10 @@ func TestSaveFailureKeepsTheActiveConfig(t *testing.T) {
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if got := send(handler, http.MethodPost, "/api/v1/settings", `{"model":null}`); got.Code != http.StatusInternalServerError {
+	if got := send(handler, http.MethodPost, "/api/v1/settings", `{"modelProviders":[]}`); got.Code != http.StatusInternalServerError {
 		t.Fatalf("failed save should return 500, got %d", got.Code)
 	}
-	if got := send(handler, http.MethodGet, "/api/v1/settings", ""); !strings.Contains(got.Body.String(), `"model":"previous"`) {
+	if got := send(handler, http.MethodGet, "/api/v1/settings", ""); !strings.Contains(got.Body.String(), `"defaultModel":"default/previous"`) {
 		t.Fatalf("failed save changed active config: %s", got.Body)
 	}
 }
@@ -185,11 +209,11 @@ func TestUsernameAndModelOptionsAreSavedIndependently(t *testing.T) {
 	if got := send(handler, http.MethodPost, "/api/v1/settings", string(settings)); got.Code != http.StatusBadRequest {
 		t.Fatalf("overlength username: %d %s", got.Code, got.Body)
 	}
-	model := `{"model":{"api":"OpenAIResponses","baseURL":"https://example.com/v1","model":"mock"}}`
+	model := `{"modelProviders":[{"id":"default","protocol":"OpenAIResponses","baseURL":"https://example.com/v1","models":[{"id":"mock"}]}]}`
 	if got := send(handler, http.MethodPost, "/api/v1/settings", model); !strings.Contains(got.Body.String(), `"maxInputToken":1000000`) {
 		t.Fatalf("default context length: %s", got.Body)
 	}
-	model = strings.Replace(model, `"model":"mock"`, `"model":"mock","maxInputToken":32768,"reasoningEffort":"custom"`, 1)
+	model = strings.Replace(model, `"id":"mock"`, `"id":"mock","maxInputToken":32768,"reasoningEffort":"custom"`, 1)
 	if got := send(handler, http.MethodPost, "/api/v1/settings", model); got.Code != http.StatusOK {
 		t.Fatalf("save model options: %d %s", got.Code, got.Body)
 	}
@@ -200,21 +224,22 @@ func TestUsernameAndModelOptionsAreSavedIndependently(t *testing.T) {
 	got := send(restarted, http.MethodGet, "/api/v1/settings", "")
 	var saved settingsSummary
 	if err := json.Unmarshal(got.Body.Bytes(), &saved); err != nil || saved.Username != name ||
-		saved.Model == nil || saved.Model.MaxInputToken != 32768 || saved.Model.ReasoningEffort != "custom" {
+		len(saved.ModelProviders) != 1 || len(saved.ModelProviders[0].Models) != 1 ||
+		saved.ModelProviders[0].Models[0].MaxInputToken != 32768 || saved.ModelProviders[0].Models[0].ReasoningEffort != "custom" {
 		t.Fatalf("settings after restart: %s", got.Body)
 	}
-	got = send(restarted, http.MethodPost, "/api/v1/settings", `{"model":null}`)
-	if err := json.Unmarshal(got.Body.Bytes(), &saved); err != nil || saved.Username != name || saved.Model != nil {
+	got = send(restarted, http.MethodPost, "/api/v1/settings", `{"modelProviders":[]}`)
+	if err := json.Unmarshal(got.Body.Bytes(), &saved); err != nil || saved.Username != name || len(saved.ModelProviders) != 0 {
 		t.Fatalf("clear model: %s", got.Body)
 	}
 }
 
 func TestProxyFlushesEventsAndCancelsUpstream(t *testing.T) {
 	t.Run("SSE", func(t *testing.T) {
-		testProxyStream(t, config.OpenAIResponsesAPI, "/responses", "text/event-stream", "data: first\n")
+		testProxyStream(t, config.OpenAIResponsesAPI, "/openai/v1/responses", "text/event-stream", "data: first\n")
 	})
 	t.Run("NDJSON", func(t *testing.T) {
-		testProxyStream(t, config.OllamaChatAPI, "/api/chat", "application/x-ndjson", "{\"done\":false}\n")
+		testProxyStream(t, config.OllamaChatAPI, "/ollama/api/chat", "application/x-ndjson", "{\"done\":false}\n")
 	})
 }
 
@@ -244,7 +269,7 @@ func testProxyStream(t *testing.T, protocol config.ModelAPIProtocol, path, media
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings := fmt.Sprintf(`{"model":{"api":%q,"baseURL":%q,"model":"fixture"}}`, protocol, upstream.URL)
+	settings := fmt.Sprintf(`{"modelProviders":[{"id":"default","protocol":%q,"baseURL":%q,"models":[{"id":"fixture"}]}]}`, protocol, upstream.URL)
 	if reply := send(handler, http.MethodPost, "/api/v1/settings", settings); reply.Code != http.StatusOK {
 		t.Fatalf("save model: %s", reply.Body)
 	}
@@ -252,7 +277,7 @@ func testProxyStream(t *testing.T, protocol config.ModelAPIProtocol, path, media
 	defer proxy.Close()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxy.URL+"/llmproxies"+path, strings.NewReader(`{"stream":true}`))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, proxy.URL+"/llm/proxies"+path, strings.NewReader(`{"stream":true,"model":"default/fixture"}`))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,5 +1,5 @@
-import { defaultMaxInputToken, listModels, protocols, readSettings, saveSettings } from './agent/settings.ts';
-import type { ModelSettings, Protocol, SettingsUpdate } from './agent/settings.ts';
+import { defaultMaxInputToken, defaultProtocol, findModel, listModels, protocols, readSettings, reasoningEfforts, saveSettings } from './agent/settings.ts';
+import type { ModelCatalog, Protocol, SettingsUpdate } from './agent/settings.ts';
 import type { Conversation } from './agent/agent.ts';
 import { mountEditor } from './editor/editor.ts';
 import { playableError } from './level/definition.ts';
@@ -10,6 +10,7 @@ import { editableCombobox } from './ui/combobox.ts';
 import { element } from './ui/elements.ts';
 import { renderHome, renderLevels } from './ui/front.ts';
 import { mountRun } from './ui/run.ts';
+import { providerSettings } from './ui/provider-settings.ts';
 import backdropURL from './render/backdrop.svg';
 import './style.css';
 
@@ -28,7 +29,8 @@ app.innerHTML = `
           <h2>称呼</h2>
           <label>用户名<input type="text" autocomplete="nickname" data-username></label>
         </fieldset>
-        <fieldset class="settings-panel" data-model-fields>
+        <fieldset class="settings-panel" data-provider-fields></fieldset>
+        <fieldset class="settings-panel" data-model-fields hidden disabled>
           <h2>模型连接</h2>
           <label>协议<select data-protocol></select></label>
           <label>Base URL<input type="url" autocomplete="off" data-base-url required></label>
@@ -47,16 +49,14 @@ app.innerHTML = `
           </div>
           <label>上下文长度（K）<input type="number" min="0.001" step="0.001" data-context-limit required></label>
           <div class="settings-combobox">
-            <label id="effort-label" for="effort">思考长度</label>
+            <label id="effort-label" for="effort">思考强度</label>
             <div class="combobox-input">
               <input id="effort" type="text" autocomplete="off" spellcheck="false" placeholder="默认" role="combobox"
                 aria-autocomplete="none" aria-controls="effort-options" aria-expanded="false" data-effort>
             </div>
             <ul class="combobox-options" id="effort-options" role="listbox" aria-labelledby="effort-label" hidden></ul>
           </div>
-          <div class="settings-actions" data-clear-connection hidden>
-            <button type="button" data-clear-settings>清除连接</button>
-          </div>
+          <label class="setting-check"><input type="checkbox" data-vision checked>支持视觉理解</label>
         </fieldset>
         <p class="settings-status" role="status" data-settings-status hidden></p>
         <div class="settings-actions"><button type="submit" class="primary">保存</button></div>
@@ -105,14 +105,15 @@ const effortInput = element<HTMLInputElement>(settingsForm, '[data-effort]');
 const effortPicker = editableCombobox(effortInput, element(settingsForm, '#effort-options'));
 const keyInput = element<HTMLInputElement>(settingsForm, '[data-api-key]');
 const settingsStatus = element(settingsForm, '[data-settings-status]');
-const clearConnection = element(settingsForm, '[data-clear-connection]');
-const clearSettings = element<HTMLButtonElement>(settingsForm, '[data-clear-settings]');
+const visionInput = element<HTMLInputElement>(settingsForm, '[data-vision]');
+const providerFields = element<HTMLFieldSetElement>(settingsForm, '[data-provider-fields]');
+const providerEditor = providerSettings(providerFields);
 const submitSettings = element<HTMLButtonElement>(settingsForm, 'button[type="submit"]');
 
 for (const [protocol, { label }] of Object.entries(protocols)) protocolInput.add(new Option(label, protocol));
 effortPicker.setOptions([
   { value: '', label: '默认' },
-  ...['low', 'medium', 'high', 'xhigh', 'ultra'].map((level) => ({ value: level, label: level })),
+  ...reasoningEfforts.map((level) => ({ value: level, label: level })),
 ]);
 
 let library: LevelEntry[] = [];
@@ -123,7 +124,9 @@ let orderWrite: Promise<void> | undefined;
 let latestSave = 0;
 let username = '';
 let setupRoute = '';
-let model: ModelSettings | null = null;
+let catalog: ModelCatalog = { defaultModel: '', modelProviders: [] };
+const defaultModel = () => findModel(catalog, catalog.defaultModel);
+const setupProvider = () => catalog.modelProviders.find(({ id }) => id === 'default');
 let activeRun: ReturnType<typeof mountRun> | undefined;
 const conversations = new Map<string, Conversation>();
 let initialized = false;
@@ -133,7 +136,7 @@ let settingsRequest = 0;
 let modelListRequest: AbortController | undefined;
 let modelsLoaded = false;
 let saving = false;
-const defaultProtocol = 'OpenAIResponses';
+let providerFormSnapshot = "";
 
 function disposeScene() {
   activeRun?.dispose();
@@ -195,8 +198,7 @@ async function renderRoute() {
     settingsRequest++;
     lockSettings(saving);
     workspace.hidden = false;
-    keyInput.value = '';
-    resetModelList();
+    providerEditor.fill(catalog);
     syncPause();
     if (mountedRoute === route && activeRun) {
       backdrop.hidden = true;
@@ -207,7 +209,7 @@ async function renderRoute() {
   }
 
   const entry = library.find((level) => level.id === id);
-  if (isPlay && entry && !playableError(entry.level) && (!username || !model)) {
+  if (isPlay && entry && !playableError(entry.level) && (!username || !defaultModel())) {
     disposeScene();
     mountedRoute = '';
     workspace.replaceChildren();
@@ -264,7 +266,7 @@ function renderEditor(entry: LevelEntry) {
   menuToggle.hidden = false;
   const { id } = entry;
   activeRun = mountEditor(workspace, {
-    level: entry.level, model, username, conversation: conversationFor(`create/${id}`), openSettings,
+    level: entry.level, catalog, username, conversation: conversationFor(`create/${id}`), openSettings,
     save(level: LevelDefinition) {
       const previous = editorWrites.get(id) ?? Promise.resolve();
       const pending = previous.catch(() => {}).then(async () => {
@@ -288,7 +290,7 @@ function renderRun(entry: LevelEntry, debug: boolean, nextLevel?: string) {
   const { id, level, revision } = entry;
   const record = progress.levels[id];
   activeRun = mountRun(workspace, {
-    level, model, username, debug, nextLevel, conversation: conversationFor(`play/${id}`),
+    level, catalog, username, debug, nextLevel, conversation: conversationFor(`play/${id}`),
     completedAt: record?.completedAt,
     savedRun: record?.revision === revision ? record.run : undefined,
     async onProgress(patch) {
@@ -317,8 +319,9 @@ function syncPause() {
 function openPlaySetup(route: string) {
   setupRoute = route;
   usernameFields.hidden = Boolean(username);
-  modelFields.hidden = Boolean(model);
-  setupTitle.textContent = username ? '设置模型连接' : model ? '设置用户名' : '设置用户名和模型连接';
+  modelFields.hidden = Boolean(defaultModel());
+  providerFields.hidden = true;
+  setupTitle.textContent = username ? '设置模型连接' : modelFields.hidden ? '设置用户名' : '设置用户名和模型连接';
   usernameInput.value = username;
   settingsMessage('');
   fillSettings();
@@ -335,19 +338,19 @@ function openMenu() {
 }
 
 function applySettings(next: Awaited<ReturnType<typeof readSettings>>, reset = false) {
-  const changed = next.username !== username || next.model?.api !== model?.api || next.model?.baseURL !== model?.baseURL ||
-    next.model?.model !== model?.model || next.model?.hasAPIKey !== model?.hasAPIKey ||
-    next.model?.maxInputToken !== model?.maxInputToken || next.model?.reasoningEffort !== model?.reasoningEffort;
+  const changed = next.username !== username || next.defaultModel !== catalog.defaultModel ||
+    JSON.stringify(next.modelProviders) !== JSON.stringify(catalog.modelProviders);
   username = next.username;
-  model = next.model;
-  if (changed || reset) activeRun?.onSettingsChange(model, username);
+  catalog = { defaultModel: next.defaultModel, modelProviders: next.modelProviders };
+  if (changed || reset) activeRun?.onSettingsChange(catalog, username);
 }
 
 function closePlaySetup() {
   setupRoute = '';
   playSetup.close();
   settingsScene.append(settingsForm);
-  usernameFields.hidden = modelFields.hidden = false;
+  usernameFields.hidden = providerFields.hidden = false;
+  modelFields.hidden = true;
   lockSettings(saving);
   keyInput.value = '';
   resetModelList();
@@ -360,9 +363,10 @@ function settingsMessage(text: string, error = false) {
 }
 
 function updateKeyHint() {
-  const sameEndpoint = model?.api === protocolInput.value &&
-    model.baseURL === addressInput.value.trim().replace(/\/+$/, '');
-  const retainsKey = Boolean(sameEndpoint && model?.hasAPIKey);
+  const provider = setupProvider();
+  const sameEndpoint = provider?.protocol === protocolInput.value &&
+    provider.baseURL === addressInput.value.trim().replace(/\/+$/, '');
+  const retainsKey = Boolean(sameEndpoint && provider?.hasAPIKey);
   keyInput.placeholder = retainsKey ? '已保存，留空可保留'
     : protocolInput.value === 'OllamaChat' ? '本地 Ollama 可留空' : '输入模型 API Key';
 }
@@ -384,7 +388,7 @@ function resetModelList() {
 function modelConnection() {
   const apiKey = keyInput.value.trim();
   return {
-    api: protocolInput.value as Protocol, baseURL: addressInput.value.trim(),
+    protocol: protocolInput.value as Protocol, baseURL: addressInput.value.trim(),
     ...(apiKey ? { apiKey } : {}),
   };
 }
@@ -394,7 +398,7 @@ async function loadModelOptions() {
   const request = modelListRequest = new AbortController();
   showModelListStatus('正在读取模型列表…');
   try {
-    const models = await listModels(modelConnection(), AbortSignal.any([request.signal, AbortSignal.timeout(17000)]));
+    const models = await listModels(modelConnection(), AbortSignal.any([request.signal, AbortSignal.timeout(17000)]), 'default');
     if (request.signal.aborted) return;
     modelPicker.setOptions(models.map((id) => ({ value: id, label: id })));
     modelsLoaded = true;
@@ -410,15 +414,21 @@ async function loadModelOptions() {
 }
 
 function fillSettings() {
-  const api = model?.api ?? defaultProtocol;
-  protocolInput.value = api;
-  addressInput.value = model?.baseURL ?? protocols[api].baseURL;
-  addressInput.placeholder = protocols[api].baseURL;
-  modelPicker.setValue(model?.model ?? '');
-  contextInput.value = String((model?.maxInputToken ?? defaultMaxInputToken) / 1000);
-  effortPicker.setValue(model?.reasoningEffort ?? '');
+  if (!setupRoute) {
+    providerEditor.fill(catalog);
+    providerFormSnapshot = JSON.stringify(providerEditor.read());
+    return;
+  }
+  const provider = setupProvider();
+  const protocol = provider?.protocol ?? defaultProtocol;
+  protocolInput.value = protocol;
+  addressInput.value = provider?.baseURL ?? protocols[protocol].baseURL;
+  addressInput.placeholder = protocols[protocol].baseURL;
+  modelPicker.setValue('');
+  contextInput.value = String(defaultMaxInputToken / 1000);
+  effortPicker.setValue('');
+  visionInput.checked = true;
   keyInput.value = '';
-  clearConnection.hidden = !model;
   updateKeyHint();
   resetModelList();
 }
@@ -430,6 +440,7 @@ function lockSettings(locked: boolean) {
   }
   usernameFields.disabled = locked || usernameFields.hidden;
   modelFields.disabled = locked || modelFields.hidden;
+  providerFields.disabled = locked || providerFields.hidden;
   submitSettings.disabled = locked;
 }
 
@@ -459,14 +470,14 @@ async function commitSettings(update: SettingsUpdate) {
   lockSettings(true);
   settingsMessage('');
   try {
-    applySettings(await saveSettings(update, AbortSignal.timeout(10000)), update.model !== undefined);
+    applySettings(await saveSettings(update, AbortSignal.timeout(10000)), update.modelProviders !== undefined);
     if (route && setupRoute === route && playSetup.open && location.hash === route) {
       closePlaySetup();
       void renderRoute();
     } else if (!settingsScene.hidden) {
-      if (update.model !== null) usernameInput.value = username;
+      usernameInput.value = username;
       fillSettings();
-      settingsMessage(update.model === null ? '已清除模型连接' : '设置已保存');
+      settingsMessage('设置已保存');
     }
   } catch (error) {
     settingsMessage(error instanceof Error && error.name !== 'TimeoutError' ? error.message : '保存设置超时', true);
@@ -512,36 +523,41 @@ settingsForm.addEventListener('submit', (event) => {
   const name = usernameInput.value;
   const displayedUsername = username.replace(/[\r\n]/g, '');
   if (!usernameFields.hidden && name !== displayedUsername) update.username = name;
-  const connection = modelConnection();
-  const modelID = modelInput.value.trim();
-  const maxInputToken = Math.round(contextInput.valueAsNumber * 1000);
-  const reasoningEffort = effortInput.value.trim();
-  const validateModel = !modelFields.hidden && Boolean(setupRoute || model || modelID || connection.apiKey ||
-    connection.api !== defaultProtocol || connection.baseURL !== protocols[defaultProtocol].baseURL ||
-    maxInputToken !== defaultMaxInputToken || reasoningEffort);
   usernameInput.required = Boolean(setupRoute || displayedUsername);
-  modelInput.required = validateModel;
-  if (!settingsForm.reportValidity()) return;
+  if (!usernameFields.hidden && !usernameInput.reportValidity()) return;
   if (update.username !== undefined && Array.from(name).length > 20) {
     settingsMessage('用户名最多 20 个字符', true);
     usernameInput.focus();
     return;
   }
-  if (validateModel) {
-    if (!Number.isSafeInteger(maxInputToken) || maxInputToken <= 0) {
-      settingsMessage('上下文长度超出范围', true);
-      contextInput.focus();
+  if (!providerFields.hidden) {
+    if (!providerEditor.validate()) return;
+    const models = providerEditor.read();
+    if (JSON.stringify(models) !== providerFormSnapshot) Object.assign(update, models);
+  }
+  if (!modelFields.hidden) {
+    if (![addressInput, modelInput, contextInput].every((input) => input.reportValidity())) return;
+    const modelID = modelInput.value.trim();
+    const maxInputToken = Math.round(contextInput.valueAsNumber * 1000);
+    if (!modelID || !Number.isSafeInteger(maxInputToken) || maxInputToken <= 0) {
+      settingsMessage(!modelID ? '请输入模型 ID' : '上下文长度超出范围', true);
+      (modelID ? contextInput : modelInput).focus();
       return;
     }
-    if (connection.apiKey || connection.api !== model?.api || connection.baseURL !== model.baseURL ||
-        modelID !== model.model || maxInputToken !== model.maxInputToken || reasoningEffort !== model.reasoningEffort) {
-      update.model = { ...connection, model: modelID, maxInputToken, reasoningEffort };
-    }
+    const provider = {
+      id: 'default', name: 'Default', ...modelConnection(),
+      models: [{ id: modelID, maxInputToken, reasoningEffort: effortInput.value.trim(), vision: visionInput.checked }],
+    };
+    const providers = catalog.modelProviders.map(({ hasAPIKey: _hasAPIKey, ...entry }) => entry);
+    const index = providers.findIndex(({ id }) => id === provider.id);
+    if (index < 0) providers.push(provider);
+    else providers[index] = provider;
+    update.modelProviders = providers;
+    update.defaultModel = `default/${modelID}`;
   }
-  if (update.username !== undefined || update.model !== undefined) void commitSettings(update);
+  if (update.username !== undefined || update.modelProviders !== undefined) void commitSettings(update);
   else settingsMessage('没有需要保存的更改');
 });
-clearSettings.addEventListener('click', () => { void commitSettings({ model: null }); });
 window.addEventListener('hashchange', () => { void renderRoute(); });
 
 async function initialize() {

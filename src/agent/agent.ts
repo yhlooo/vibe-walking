@@ -26,6 +26,7 @@ export type Conversation = {
   events: ChatEvent[];
   history: Record<string, unknown>[];
   protocol?: Protocol;
+  modelSource?: string;
   pendingSystemInfo?: string;
   interrupted?: boolean;
   usage?: ContextUsage;
@@ -98,7 +99,9 @@ export class Agent {
     const protocol = this.model.api;
     const adapter = adapters[protocol];
     const conversation = this.conversation;
-    if (conversation.protocol && conversation.protocol !== protocol) {
+    const modelSource = JSON.stringify([this.model.baseURL, this.model.model]);
+    if ((conversation.protocol && conversation.protocol !== protocol) ||
+        (conversation.modelSource && conversation.modelSource !== modelSource)) {
       conversation.history = conversation.events.flatMap((event) => {
         if (event.kind === 'player') return [{ role: 'user', content: userContent(event.text, event.systemInfo) }];
         if (event.kind === 'assistant') return [{ role: 'assistant', content: event.text }];
@@ -106,8 +109,10 @@ export class Agent {
         return [];
       });
       delete conversation.usage;
+      delete conversation.summary;
     }
     conversation.protocol = protocol;
+    conversation.modelSource = modelSource;
     const { history } = conversation;
     prompt = personalizePrompt(prompt, this.username);
     const systemInfo = [

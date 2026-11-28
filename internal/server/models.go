@@ -20,37 +20,75 @@ func (s *service) handleModels(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		API     config.ModelAPIProtocol `json:"api"`
-		BaseURL string                  `json:"baseURL"`
-		APIKey  *string                 `json:"apiKey"`
+		Protocol   config.ModelAPIProtocol `json:"protocol"`
+		ProviderID string                  `json:"providerID"`
+		BaseURL    string                  `json:"baseURL"`
+		APIKey     *string                 `json:"apiKey"`
 	}
 	if err := decodeJSON(http.MaxBytesReader(w, r.Body, 64<<10), &body, true); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_connection", "模型连接格式错误")
 		return
 	}
-	model := config.ModelConfig{Protocol: body.API, BaseURL: body.BaseURL}
+	connection := config.Connection{Protocol: body.Protocol, BaseURL: body.BaseURL}
 	if body.APIKey != nil {
-		model.APIKey = *body.APIKey
+		connection.APIKey = *body.APIKey
 	}
-	model, err := model.NormalizeConnection()
+	connection, err := connection.Normalize()
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_connection", err.Error())
 		return
 	}
-	useSavedKey(&model, body.APIKey, s.readSettings().Model)
+	settings := s.readSettings()
+	if saved, ok := settings.FindProvider(body.ProviderID); ok {
+		connection = connection.WithSavedSettings(saved.Connection, body.APIKey == nil)
+	}
 
+	if models, ok := s.discoverModels(w, r, connection); ok {
+		writeJSON(w, http.StatusOK, map[string][]string{"models": models})
+	}
+}
+
+func (s *service) handleProviders(w http.ResponseWriter, r *http.Request) {
+	settings := s.readSettings()
+	writeJSON(w, http.StatusOK, struct {
+		DefaultModel string            `json:"defaultModel"`
+		Providers    []providerSummary `json:"providers"`
+	}{settings.DefaultModel, summarizeProviders(settings)})
+}
+
+func (s *service) handleProviderModels(w http.ResponseWriter, r *http.Request) {
+	provider, ok := s.readSettings().FindProvider(r.PathValue("providerID"))
+	if !ok {
+		writeError(w, http.StatusNotFound, "provider_not_found", "供应商未配置")
+		return
+	}
+	models, ok := s.discoverModels(w, r, provider.Connection)
+	if !ok {
+		return
+	}
+	type discoveredModel struct {
+		ID string `json:"id"`
+	}
+	result := make([]discoveredModel, 0, len(models))
+	for _, id := range models {
+		result = append(result, discoveredModel{ID: id})
+	}
+	writeJSON(w, http.StatusOK, map[string][]discoveredModel{"models": result})
+}
+
+func (s *service) discoverModels(w http.ResponseWriter, r *http.Request, connection config.Connection) ([]string, bool) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	models, err := s.listModels(ctx, model)
+	models, err := s.listModels(ctx, connection)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			writeError(w, http.StatusGatewayTimeout, "upstream_timeout", "读取模型列表超时")
 		} else {
 			writeError(w, http.StatusBadGateway, "model_list_failed", err.Error())
 		}
-		return
+		return nil, false
 	}
-	writeJSON(w, http.StatusOK, map[string][]string{"models": models})
+	return models, true
 }
 
 type modelListPage struct {
@@ -65,11 +103,15 @@ type modelListPage struct {
 	LastID  string `json:"last_id"`
 }
 
-func (s *service) listModels(ctx context.Context, model config.ModelConfig) ([]string, error) {
-	endpoint := model.BaseURL + "/models"
-	if model.Protocol == config.OllamaChatAPI {
-		endpoint = model.BaseURL + "/api/tags"
+func (s *service) listModels(ctx context.Context, model config.Connection) ([]string, error) {
+	suffix := "/models"
+	switch model.Protocol {
+	case config.AnthropicMessagesAPI:
+		suffix = "/v1/models"
+	case config.OllamaChatAPI:
+		suffix = "/tags"
 	}
+	endpoint := model.Endpoint(suffix)
 	models := []string{}
 	seen := make(map[string]bool)
 	add := func(id string) {
@@ -111,7 +153,7 @@ func (s *service) listModels(ctx context.Context, model config.ModelConfig) ([]s
 	}
 }
 
-func (s *service) fetchModelListPage(ctx context.Context, model config.ModelConfig, endpoint string) (modelListPage, error) {
+func (s *service) fetchModelListPage(ctx context.Context, model config.Connection, endpoint string) (modelListPage, error) {
 	var page modelListPage
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {

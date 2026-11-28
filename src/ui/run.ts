@@ -1,19 +1,21 @@
 import { Agent, emptyRequestStats } from '../agent/agent.ts';
 import type { ChatEvent, Conversation } from '../agent/agent.ts';
 import { defaultPrompt, respawnInfo, victoryPrompt } from '../agent/prompts.ts';
-import type { ModelSettings } from '../agent/settings.ts';
+import { findModel } from '../agent/settings.ts';
+import type { ModelCatalog, ModelSettings } from '../agent/settings.ts';
 import { Runtime } from '../game/runtime.ts';
 import type { Outcome, Snapshot } from '../game/world.ts';
 import type { LevelDefinition } from '../level/definition.ts';
 import { captureScene, drawScene } from '../render/scene.ts';
 import type { ProgressUpdate, SavedRun } from '../storage/game.ts';
 import { element, formatDuration } from './elements.ts';
+import { modelPicker } from './model-picker.ts';
 
 const resultDelayMS = 5000;
 
 type RunOptions = {
   level: LevelDefinition;
-  model: ModelSettings | null;
+  catalog: ModelCatalog;
   username: string;
   conversation: Conversation;
   debug?: boolean;
@@ -43,7 +45,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
           aria-label="调整对话历史和输入栏高度" aria-controls="vibe-chat-history" data-chat-divider></div>
         <form class="composer" data-composer>
           <textarea aria-label="发给 Vibe 的消息" placeholder="告诉 Vibe 下一步怎么做…" rows="3"></textarea>
-          <div class="composer-footer"><span class="subtle" data-run-status></span><button class="text-button" type="button" data-connect>配置模型</button><button class="primary" type="submit" disabled>发送</button></div>
+          <div class="composer-footer"><span class="subtle" data-run-status></span><button class="text-button model-trigger" type="button" aria-haspopup="dialog" data-model-picker hidden></button><button class="text-button" type="button" data-connect>配置模型</button><button class="primary" type="submit" disabled>发送</button></div>
         </form>
         ${editor ? `
           <div class="recording-panel" data-recording hidden>
@@ -98,6 +100,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   const input = element<HTMLTextAreaElement>(composer, 'textarea');
   const send = element<HTMLButtonElement>(composer, 'button[type="submit"]');
   const connect = element<HTMLButtonElement>(composer, '[data-connect]');
+  const modelTrigger = element<HTMLButtonElement>(composer, '[data-model-picker]');
   const clearChat = element<HTMLButtonElement>(root, '[data-clear-chat]');
   const status = element(root, '[data-run-status]');
   const stageStatus = element(root, '[data-stage-status]');
@@ -122,7 +125,16 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   }
 
   let level = options.level;
-  let model = options.model;
+  let catalog = options.catalog;
+  let model = findModel(catalog, catalog.defaultModel);
+  let selection: ModelSettings | undefined;
+  const picker = modelPicker(root, modelTrigger, signal, (picked) => {
+    selection = model = picked;
+    replaceAgent();
+    picker.showModel(model);
+    refreshStatus();
+  });
+  picker.showModel(model);
   let username = options.username;
   const entries = new WeakMap<ChatEvent, HTMLElement>();
   let manual = false;
@@ -153,6 +165,8 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     send.textContent = busy ? '中断' : '发送';
     connect.textContent = username ? '配置模型' : '设置用户名';
     connect.hidden = Boolean(model && username) || manual;
+    modelTrigger.hidden = !model || !username || manual;
+    modelTrigger.disabled = busy || resultPending || !chat;
     input.disabled = !chat;
     input.placeholder = won && chat ? '和 Vibe 聊聊…' : '告诉 Vibe 下一步怎么做…';
     clearChat.hidden = won && result !== null;
@@ -441,6 +455,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
     replaceAgent();
     conversation.events.length = conversation.history.length = 0;
     delete conversation.protocol;
+    delete conversation.modelSource;
     delete conversation.usage;
     if (requestTracker) requestTracker.stats = emptyRequestStats();
     delete conversation.summary;
@@ -452,6 +467,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
   }, { signal });
 
   connect.addEventListener('click', options.openSettings, { signal });
+  modelTrigger.addEventListener('click', () => { if (model) picker.open(catalog, model); }, { signal });
   input.addEventListener('input', refreshStatus, { signal });
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) {
@@ -509,8 +525,16 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       if (changed) reset();
     },
     redraw() { draw(runtime.world.snapshot()); },
-    onSettingsChange(next: ModelSettings | null, nextUsername: string) {
-      model = next;
+    onSettingsChange(next: ModelCatalog, nextUsername: string) {
+      catalog = next;
+      const selected = selection && findModel(next, selection.model);
+      if (selected && selection) {
+        model = { ...selected, maxInputToken: selection.maxInputToken, reasoningEffort: selection.reasoningEffort };
+      } else {
+        selection = undefined;
+        model = findModel(next, next.defaultModel);
+      }
+      picker.showModel(model);
       username = nextUsername;
       if (!resultPending || resultReadyAt !== undefined) replaceAgent();
       refreshStatus();
@@ -530,6 +554,7 @@ export function mountRun(root: HTMLElement, options: RunOptions) {
       window.clearInterval(checkpointTimer);
       window.clearTimeout(resultTimer);
       result?.close();
+      picker.close();
       chatResize.disconnect();
       events.abort();
       agent?.dispose();

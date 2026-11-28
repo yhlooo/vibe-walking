@@ -8,34 +8,28 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/yhlooo/vibe-walking/pkg/config"
 )
 
 type modelProxy struct {
-	protocol config.ModelAPIProtocol
-	suffix   string
+	protocol       config.ModelAPIProtocol
+	path           string
+	upstreamSuffix string
 }
 
 var modelProxies = []modelProxy{
-	{config.OpenAIChatCompletionsAPI, "/chat/completions"},
-	{config.OpenAIResponsesAPI, "/responses"},
-	{config.AnthropicMessagesAPI, "/messages"},
-	{config.OllamaChatAPI, "/api/chat"},
+	{config.OpenAIChatCompletionsAPI, "/openai/v1/chat/completions", "/chat/completions"},
+	{config.OpenAIResponsesAPI, "/openai/v1/responses", "/responses"},
+	{config.AnthropicMessagesAPI, "/anthropic/v1/messages", "/v1/messages"},
+	{config.OllamaChatAPI, "/ollama/api/chat", "/chat"},
 }
 
 func (s *service) proxy(proxy modelProxy) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		model := s.readSettings().Model
-		switch {
-		case model.Protocol == "":
-			writeError(w, http.StatusNotFound, "model_not_configured", "请先配置模型连接")
-			return
-		case model.Protocol != proxy.protocol:
-			writeError(w, http.StatusNotFound, "proxy_not_enabled", "模型协议已切换，请重新加载连接设置")
-			return
-		case r.Method != http.MethodPost:
+		if r.Method != http.MethodPost {
 			w.Header().Set("Allow", "POST")
 			writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "此接口只接受 POST")
 			return
@@ -46,14 +40,29 @@ func (s *service) proxy(proxy modelProxy) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_proxy_body", "模型请求必须是 32 MiB 以内的 JSON 对象")
 			return
 		}
-		body["model"], _ = json.Marshal(model.Model)
+		var id string
+		if err := json.Unmarshal(body["model"], &id); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_model", "模型必须使用 供应商ID/模型ID 格式")
+			return
+		}
+		providerID, modelID, found := strings.Cut(id, "/")
+		if !found || providerID == "" || modelID == "" {
+			writeError(w, http.StatusBadRequest, "invalid_model", "模型必须使用 供应商ID/模型ID 格式")
+			return
+		}
+		provider, model, ok := s.readSettings().FindModel(id)
+		if !ok || provider.Protocol != proxy.protocol {
+			writeError(w, http.StatusNotFound, "model_not_found", "该协议下未配置此模型")
+			return
+		}
+		body["model"], _ = json.Marshal(model.ID)
 		payload, err := json.Marshal(body)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid_proxy_body", "无法编码模型请求")
 			return
 		}
 
-		upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, model.BaseURL+proxy.suffix, bytes.NewReader(payload))
+		upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, provider.Endpoint(proxy.upstreamSuffix), bytes.NewReader(payload))
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "upstream_unavailable", "无法请求上游模型接口")
 			return
@@ -67,7 +76,7 @@ func (s *service) proxy(proxy modelProxy) http.HandlerFunc {
 			}
 			upstream.Header.Set("Accept", mediaType)
 		}
-		setModelHeaders(upstream, model)
+		setModelHeaders(upstream, provider.Connection)
 
 		start := time.Now()
 		response, err := s.client.Do(upstream)
@@ -97,7 +106,7 @@ func (s *service) proxy(proxy modelProxy) http.HandlerFunc {
 	}
 }
 
-func setModelHeaders(request *http.Request, model config.ModelConfig) {
+func setModelHeaders(request *http.Request, model config.Connection) {
 	if model.Protocol == config.AnthropicMessagesAPI {
 		request.Header.Set("anthropic-version", "2023-06-01")
 		if model.APIKey != "" {
